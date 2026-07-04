@@ -64,12 +64,30 @@ Faster.exe --help
 | `ServiceOps.cs` | The engine - `sc.exe config`, dependency-aware stop/start, `Activate()`. |
 | `Program.cs` | Entry point - argument parsing, `AttachConsole` for headless output, GUI launch. |
 | `CliRunner.cs` | Headless command implementations (`--list/--show/--activate/--delete/--baseline`). |
-| `MainForm.cs` | Main window - service grid (checkable) + saved-lists panel. |
+| `MainForm.cs` | Main window - service grid (checkable) + a right-hand tab strip ("Lists" / "Details"). |
 | `NewListDialog.cs` | Modal: name a new list, pick its action + target start type. |
 | `ServiceCatalog.cs` | Curated category/purpose lookup for well-known service names. |
-| `ServiceDetailsDialog.cs` | Read-only per-service details popup (WMI fields + live resource metrics). |
+| `ServiceDetailsPanel.cs` | The "Details" tab's content - label/value tables (WMI fields + live resource metrics) for whichever row is currently selected in the grid. |
+| `ServiceDetailsDialog.cs` | Unused - superseded by `ServiceDetailsPanel.cs`/the "Details" tab; kept on disk pending removal. |
 | `ServiceMetrics.cs` | `ServiceMetrics` model + `ServiceMetricsCollector` (PID/memory/handles/threads/CPU sampling). |
 | `app.manifest` | `asInvoker` (see Elevation above) + per-monitor DPI awareness. |
+
+## Right-hand panel
+
+The right side of the main window is a `TabControl` with two tabs, sized by `SplitContainer`
+with `FixedPanel = Panel2` (so it stays a constant pixel width when the window is resized,
+instead of scaling proportionally):
+- **Lists** - exactly what used to be the whole right panel: the saved-lists `ListBox` +
+  New/Activate/Restore/Show/Delete buttons.
+- **Details** - everything known about the currently selected grid row (was previously a
+  right-click "Details..." modal popup - that menu item is gone; selecting a row, by any
+  means, now updates this tab live via `_grid.SelectionChanged` -> `MainForm.UpdateDetailsPanel`
+  -> `ServiceDetailsPanel.ShowService`). Rendered as titled label/value tables (bold label
+  column, regular value column, bordered grid cells) rather than one text block: an Overview
+  table (name/category/start type/state/baseline), a Purpose paragraph, a WMI-sourced table
+  (description/account/type/binary path), and a Resource Usage table (see below) - the WMI and
+  metrics tables start as "Loading..." placeholders and are swapped in place once their
+  background fetch finishes, discarding the result if the selection has since moved on.
 
 ## Resource metrics
 

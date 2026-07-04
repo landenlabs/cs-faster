@@ -26,6 +26,7 @@ namespace Faster
         private readonly Label _baselineLabel = new();
         private readonly ContextMenuStrip _rowMenu = new();
         private readonly Button _metricsBtn = new();
+        private readonly ServiceDetailsPanel _detailsPanel = new(300);
 
         // Metric columns are built once but only added to the grid on the first "Metrics" click -
         // the whole point of the button is that the grid starts up fast without per-process
@@ -189,6 +190,10 @@ namespace Faster
             };
             BuildRowContextMenu();
             _grid.MouseDown += Grid_MouseDown;
+            // Keeps the "Details" tab live: whatever row is selected (left-click, right-click,
+            // arrow keys) is reflected there immediately, replacing the old right-click "Details"
+            // popup.
+            _grid.SelectionChanged += (_, _) => UpdateDetailsPanel();
             split.Panel1.Controls.Add(_grid);
             split.Panel1.Controls.Add(BuildFilterBar());
 
@@ -216,7 +221,18 @@ namespace Faster
             right.Controls.Add(_listsBox);
             right.Controls.Add(listsLabel);
             right.Controls.Add(btnPanel);
-            split.Panel2.Controls.Add(right);
+
+            // Right side is now a tab strip: "Lists" is exactly what used to be the whole right
+            // panel; "Details" is what used to be the right-click "Details..." popup, now living
+            // inline and updating as the grid selection changes (see _grid.SelectionChanged above).
+            var rightTabs = new TabControl { Dock = DockStyle.Fill };
+            var listsTab = new TabPage("Lists");
+            listsTab.Controls.Add(right);
+            var detailsTab = new TabPage("Details");
+            detailsTab.Controls.Add(_detailsPanel);
+            rightTabs.TabPages.Add(listsTab);
+            rightTabs.TabPages.Add(detailsTab);
+            split.Panel2.Controls.Add(rightTabs);
 
             _status.Dock = DockStyle.Bottom;
             _status.Height = 24;
@@ -464,14 +480,9 @@ namespace Faster
             var servicesMscItem = new ToolStripMenuItem("Open services.msc");
             servicesMscItem.Click += (_, _) => OpenServicesMsc();
 
-            var detailsItem = new ToolStripMenuItem("Details...");
-            detailsItem.Click += (_, _) => ShowSelectedServiceDetails();
-
             _rowMenu.Items.Add(copyItem);
             _rowMenu.Items.Add(searchItem);
             _rowMenu.Items.Add(servicesMscItem);
-            _rowMenu.Items.Add(new ToolStripSeparator());
-            _rowMenu.Items.Add(detailsItem);
         }
 
         /// <summary>
@@ -543,14 +554,14 @@ namespace Faster
             }
         }
 
-        private void ShowSelectedServiceDetails()
+        /// <summary>Pushes the currently selected row's fields into the "Details" tab. Wired to
+        /// _grid.SelectionChanged - replaces the old right-click "Details..." popup.</summary>
+        private void UpdateDetailsPanel()
         {
             var row = SelectedRow();
             if (row == null) return;
-            using var dlg = new ServiceDetailsDialog(
-                row.ServiceName, row.DisplayName, row.CategoryLabel, row.Purpose,
+            _detailsPanel.ShowService(row.ServiceName, row.DisplayName, row.CategoryLabel, row.Purpose,
                 row.StartTypeText, row.RunningText, row.BaselineText);
-            dlg.ShowDialog(this);
         }
 
         private void LoadData()

@@ -78,7 +78,9 @@ concept, not a per-account one.
 - `ServiceOps.cs` - the engine: `sc.exe config` for start type, dependency-aware stop/start,
   per-item exception isolation.
 - `CliRunner.cs` / `Program.cs` - headless command parsing and dispatch.
-- `MainForm.cs` / `NewListDialog.cs` / `ServiceDetailsDialog.cs` - the GUI.
+- `MainForm.cs` / `NewListDialog.cs` / `ServiceDetailsPanel.cs` - the GUI. The right side of the
+  main window is a "Lists" / "Details" tab strip - "Details" shows the selected row's info as
+  formatted label/value tables and updates live as the grid selection changes.
 - `ServiceCatalog.cs` - category/purpose lookup for well-known services.
 - `ServiceMetrics.cs` - on-demand PID/memory/handles/threads/CPU sampling (the Metrics button
-  and the Details popup).
+  and the Details tab).
