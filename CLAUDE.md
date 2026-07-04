@@ -99,7 +99,8 @@ Faster.exe --help
 | `ServiceMetrics.cs` | `ServiceMetrics` model + `ServiceMetricsCollector` (PID/memory/handles/threads/CPU sampling). |
 | `AboutPanel.cs` | The "About" tab's content - icon, name/version/description/legal text (version/build date/copyright from `AppInfo`), plus an "Open Settings Folder" button. |
 | `AppInfo.cs` | Version/BuildDate/Copyright/Company - read from assembly metadata that MSBuild derives from `Faster.csproj`. Mirrors `cs-b4browse`'s `AppInfo.cs` exactly. |
-| `AppIcon.cs` | Loads `icon.ico`/`icon.png` (embedded resource first, loose file next to the exe as a debug-run fallback) for every window's title-bar icon and the About tab's image. |
+| `AppIcon.cs` | Loads `icon.ico`/`icon.png`/`dark-light.png` (embedded resource first, loose file next to the exe as a debug-run fallback) for every window's title-bar icon, the About tab's image, and the toolbar's theme-toggle icon. |
+| `Theme.cs` | Light/dark theme - `Current`/`Toggle()`/`Apply()`, a colour palette, `ApplyToTree(Control)` (generic type-driven recolouring + button styling + native-scrollbar theming for a whole form), persisted to `%LocalAppData%\Faster\theme.txt`. Mirrors `cs-b4browse`'s `Theme.cs` minus that app's separate font-scaling feature. |
 | `HelpDialog.cs` | Modal opened by the toolbar's right-edge "Help" button - a read-only `RichTextBox` feature tour mirroring README.md's intro/"How it works" (skipping the CLI and Architecture sections, which are for repo readers, not end users), with `DetectUrls` + `LinkClicked` opening the GitHub repo link, the full README link, and a "Resources" section of Microsoft Learn pages on Windows services in the default browser. |
 | `icon.ico` / `icon.png` | The app icon - `icon.ico` is a multi-resolution (16-256px) `.ico` generated from `icon.png`; `icon.ico` doubles as the `<ApplicationIcon>` (the .exe's own Explorer/file-properties icon) and, via `AppIcon`, the runtime window icon; `icon.png` is the source art and the About tab's larger display image. |
 | `app.manifest` | `asInvoker` (see Elevation above) + per-monitor DPI awareness. |
@@ -127,6 +128,9 @@ Faster.exe --help
   Name" column additionally has `AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill` so it - and
   only it - soaks up any resulting extra horizontal space instead of leaving blank space past the
   last column, while every other column keeps its explicit `Width` and stays manually resizable.
+- `Grid_CellFormatting` also tints the Start Type column - plain "Automatic" the same light green
+  as a Running cell, "Automatic (Delayed)" a visibly deeper shade of the same green - so the two
+  read apart at a glance; Manual/Disabled/Boot/System keep the grid's normal colors.
 
 ## Right-hand panel
 
@@ -214,6 +218,39 @@ service via `CollectOne()`. Because several services often share one host proces
 several packed into one `svchost.exe`), the numbers are that whole process's total whenever
 `SharedWithCount > 0` - both the grid ("shared x`N`") and the Details popup call this out rather
 than presenting a false per-service breakdown.
+
+## Theme
+
+Light/dark, toggled by a `dark-light.png` icon button in the toolbar (immediately left of
+"Help" - `MainForm._themeToggle`, a `PictureBox` rather than a `Button` so the icon can render
+at its native aspect ratio via `PictureBoxSizeMode.Zoom`; shown as-is, not tinted per theme,
+since the half-black/half-white circle already reads as "light/dark" on its own). `Theme.cs`
+mirrors `cs-b4browse`'s of the same name (same palette, same `Application.SetColorMode`-based
+approach - `WFO5001` suppressed in `Faster.csproj` since that API is still experimental) minus
+that app's separate content-font-scaling feature, which Faster doesn't have. Choice persisted
+to `%LocalAppData%\Faster\theme.txt`; applied once at GUI startup (`Program.Main`, before
+`MainForm` is constructed) and live-updated afterward via `Theme.Changed`.
+
+`Theme.ApplyToTree(Control)` is the one call each window needs: it walks every descendant and
+recolours it purely by control **type** (`Panel`/`TabPage`/etc. -> `Theme.Panel`,
+`DataGridView`/`RichTextBox`/`TextBox`/`ComboBox` -> `Theme.Surface`+`Theme.Text`,
+`Label`/`CheckBox` -> `Theme.Text`), then styles every `Button` and native-themes every
+scrollable control's OS-drawn scrollbar. This is a deliberately simpler approach than
+cs-b4browse's own per-named-field `ApplyThemeColors` (Faster's control tree has no per-row
+severity tinting to preserve), so no Panel/Label/etc. needs to be promoted to a field just to
+be reachable here. `MainForm` calls it once at construction and again on every `Theme.Changed`
+(it's the one long-lived window); `NewListDialog`/`HelpDialog` call it once at construction only
+- both are modal, so the toolbar's toggle button is unreachable for as long as one is open, and
+each is rebuilt from scratch the next time it's opened anyway. Two things `ApplyToTree`
+deliberately does NOT touch, because they're semantic status colours rather than theme chrome
+(same principle as cs-b4browse's fixed severity colours): the main grid's `Grid_CellFormatting`
+running/stopped/start-type/baseline-mismatch tinting, and the admin purple accent (`AdminAccent` - "Run as
+Admin"'s text, the status bar's "Standard user" label, the purple dot on
+Activate/Restore-All) - `MainForm.ApplyThemeColors` re-asserts those two right after calling
+`ApplyToTree`, since its generic Button/Label pass would otherwise reset them to the theme's
+neutral text colour. Native scrollbar theming additionally needs a real Win32 handle to take
+effect, which doesn't exist yet at construction time - each window's `OnShown` override calls
+`Theme.ApplyScrollbarTheme` again once it does.
 
 ## Recovery scripts (`scripts/`)
 

@@ -91,6 +91,8 @@ first rather than letting every service in the list fail with an access-denied e
 - The **About** tab (bottom-right) shows the app's version/build date and an "Open Settings
   Folder" shortcut; the **Help** button (top-right of the toolbar) opens this same feature tour
   plus links to the GitHub repo and a few general resources on Windows services.
+- The half-black/half-white circle just left of Help toggles **light/dark theme**. The choice
+  is remembered for next launch.
 
 Storage is per-user (`%LocalAppData%`), so lists/baseline don't collide across accounts and
 don't require the account that first ran Faster to keep matching ACLs for later runs, elevated

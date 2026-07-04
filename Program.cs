@@ -174,6 +174,8 @@ namespace Faster
             // on first run before the window shows, so the "current config" grid has something
             // to compare against.
             ApplicationConfiguration.Initialize();
+            Theme.Load();
+            Theme.Apply(Theme.Current);   // apply the saved light/dark mode before any window is shown
             try { BaselineStore.LoadOrCapture(); }
             catch (Exception ex)
             {

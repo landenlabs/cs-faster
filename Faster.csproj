@@ -17,6 +17,8 @@
     <Company>LanDen Labs</Company>
     <Product>Faster</Product>
     <Description>Save and switch between named Windows service configurations to tune system performance.</Description>
+    <!-- Application.SetColorMode / SystemColorMode (Theme.cs) are still experimental (WFO5001). -->
+    <NoWarn>$(NoWarn);WFO5001</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -41,6 +43,11 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </EmbeddedResource>
     <EmbeddedResource Include="icon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </EmbeddedResource>
+    <!-- The toolbar's theme-toggle button icon (AppIcon.LoadThemeToggleImage) - same embed +
+         loose-file-fallback treatment as icon.ico/icon.png above. -->
+    <EmbeddedResource Include="dark-light.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </EmbeddedResource>
   </ItemGroup>

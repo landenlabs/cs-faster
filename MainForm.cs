@@ -34,6 +34,7 @@ namespace Faster
         private readonly Label _baselineLabel = new();
         private readonly ContextMenuStrip _rowMenu = new();
         private readonly Button _metricsBtn = new();
+        private readonly PictureBox _themeToggle = new();
         private readonly Button _helpBtn = new();
         private readonly Button _saveCheckedBtn = new();
         private readonly Button _restoreAllBtn = new();
@@ -50,6 +51,11 @@ namespace Faster
 
         // ---- Elevation affordances (mirrors cs-b4browse's Elevation.cs + MainForm pattern) --- //
         private readonly Label _adminStatusLabel = new();
+        // Null once already elevated - "Run as Admin" doesn't exist at all then (see BuildLayout).
+        // Kept as a field (not a BuildLayout-local var) purely so ApplyThemeColors can re-assert
+        // its purple ForeColor after Theme.StyleButtons would otherwise reset every button's
+        // ForeColor to the theme's neutral text colour.
+        private Button? _runAsAdminBtn;
         private static readonly Color AdminAccent = Color.MediumPurple;
 
         // Metric columns are built once but only added to the grid on the first "Metrics" click -
@@ -171,6 +177,42 @@ namespace Faster
             // _selectAllCheck as the form lays out, but re-measuring once more after the whole
             // form has actually shown catches any DPI/layout pass that settles after that.
             Load += (_, _) => PositionSelectAllHeaderCheck();
+
+            // Paint for whichever theme Program.Main already applied (Theme.Load()/Apply() run
+            // before this form is constructed), then keep repainting live on every later toggle -
+            // MainForm is the one long-lived window in the app, unlike the modal dialogs (which
+            // just read Theme.Current once, in their own constructors, since the toolbar's toggle
+            // button is unreachable while one of them is open anyway).
+            ApplyThemeColors();
+            Theme.Changed += ApplyThemeColors;
+        }
+
+        /// <summary>Repaints every themeable control under this form for whatever Theme.Current
+        /// now is - see Theme.ApplyToTree for exactly what that covers (backgrounds, grid/text
+        /// colours, buttons, native scrollbars). Grid_CellFormatting's running/stopped tinting is
+        /// untouched - CellFormatting fires fresh on every paint regardless, so it doesn't need
+        /// re-asserting here. The admin purple accent DOES need re-asserting: ApplyToTree's
+        /// Theme.StyleButtons/generic Label pass resets every Button/Label's ForeColor to the
+        /// theme's neutral text colour, which would otherwise wipe out "Run as Admin"'s and the
+        /// status bar's semantic purple/blue - those, like cs-b4browse's own severity colours,
+        /// stay the same fixed shades in either theme rather than following Theme.Text.</summary>
+        private void ApplyThemeColors()
+        {
+            Theme.ApplyToTree(this);
+            if (_runAsAdminBtn != null) _runAsAdminBtn.ForeColor = AdminAccent;
+            UpdateAdminStatusLabel();
+            Invalidate(true);
+        }
+
+        /// <summary>Native (OS-drawn) scrollbars - the grids' in particular - only pick up
+        /// Theme.ApplyScrollbarTheme's SetWindowTheme call once their Win32 handles actually
+        /// exist, which isn't yet true back in the constructor's ApplyThemeColors() call (nothing
+        /// has been shown yet). OnShown fires once those handles are real, mirroring
+        /// cs-b4browse's own MainForm.OnShown for the same reason.</summary>
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            Theme.ApplyScrollbarTheme(this);
         }
 
         private void BuildLayout()
@@ -184,13 +226,13 @@ namespace Faster
             int x = 8;
             if (!Elevation.IsAdmin)
             {
-                var adminBtn = new Button { Text = "Run as Admin", Left = x, Top = 8, Width = 110 };
-                adminBtn.ForeColor = AdminAccent;
-                adminBtn.Click += (_, _) => RelaunchAsAdmin();
-                _tips.SetToolTip(adminBtn,
+                _runAsAdminBtn = new Button { Text = "Run as Admin", Left = x, Top = 8, Width = 110 };
+                _runAsAdminBtn.ForeColor = AdminAccent;
+                _runAsAdminBtn.Click += (_, _) => RelaunchAsAdmin();
+                _tips.SetToolTip(_runAsAdminBtn,
                     "Relaunch Faster as Administrator - required to activate or restore a list.");
-                top.Controls.Add(adminBtn);
-                x = adminBtn.Right + 8;
+                top.Controls.Add(_runAsAdminBtn);
+                x = _runAsAdminBtn.Right + 8;
             }
 
             var refreshBtn = new Button { Text = "Refresh", Left = x, Top = 8, Width = 90 };
@@ -230,6 +272,26 @@ namespace Faster
             top.Controls.Add(_helpBtn);
             top.Resize += (_, _) => PositionHelpButton(top);
             PositionHelpButton(top);
+
+            // Theme toggle sits immediately left of Help, at the same right-anchored edge -
+            // PositionThemeToggle is wired up (and called once) AFTER PositionHelpButton above,
+            // so on every resize _helpBtn's own position is already correct by the time this one
+            // reads _helpBtn.Left off of it.
+            _themeToggle.Width = 28;
+            _themeToggle.Height = 28;
+            _themeToggle.Top = 8;
+            _themeToggle.SizeMode = PictureBoxSizeMode.Zoom;
+            _themeToggle.Cursor = Cursors.Hand;
+            _themeToggle.BackColor = Color.Transparent;
+            // Shown as-is (not tinted to match the theme) - same choice cs-b4browse makes for
+            // this same image, since a half-black/half-white circle already reads as "light/dark"
+            // without needing to match either palette.
+            if (AppIcon.LoadThemeToggleImage() is Image themeImg) _themeToggle.Image = themeImg;
+            _themeToggle.Click += (_, _) => Theme.Toggle();
+            _tips.SetToolTip(_themeToggle, "Toggle dark / light theme");
+            top.Controls.Add(_themeToggle);
+            top.Resize += (_, _) => PositionThemeToggle();
+            PositionThemeToggle();
 
             // SplitterDistance is set once the form has its real size (Load, below) rather than
             // here: its setter validates against the control's CURRENT width, which at this point
@@ -723,6 +785,12 @@ namespace Faster
         private void PositionHelpButton(Panel top) =>
             _helpBtn.Left = Math.Max(top.ClientSize.Width - _helpBtn.Width - 8, 0);
 
+        /// <summary>Keeps the theme-toggle icon pinned immediately left of _helpBtn - reads
+        /// _helpBtn.Left rather than re-deriving its own position from the toolbar's width, so it
+        /// always tracks wherever Help itself actually ended up.</summary>
+        private void PositionThemeToggle() =>
+            _themeToggle.Left = Math.Max(_helpBtn.Left - _themeToggle.Width - 8, 0);
+
         /// <summary>Sorts in place by the current header-click column, falling back to a string
         /// comparison if the two keys' runtime types can't be compared directly (defensive only -
         /// every SortKey case below returns one consistent type per property).</summary>
@@ -851,19 +919,41 @@ namespace Faster
         private static readonly Color RunningBack = Color.FromArgb(198, 239, 206);
         private static readonly Color RunningFore = Color.FromArgb(0, 97, 0);
 
-        /// <summary>Colors the Running column's cell light green when the service is running;
-        /// stopped services keep the grid's normal colors. Runs on every cell paint rather than
+        // Same idiom for the Start Type column: plain "Automatic" gets the same light green as
+        // a Running cell, "Automatic (Delayed)" gets a noticeably deeper shade of the same green
+        // so the two read as distinct at a glance without having to read the text. Other start
+        // types (Manual/Disabled/Boot/System) are left at the grid's normal colors.
+        private static readonly Color AutomaticBack = Color.FromArgb(198, 239, 206);
+        private static readonly Color AutomaticDelayedBack = Color.FromArgb(121, 201, 132);
+
+        /// <summary>Colors the Running column's cell light green when the service is running, and
+        /// the Start Type column light/deeper green for Automatic/Automatic (Delayed) respectively;
+        /// everything else keeps the grid's normal colors. Runs on every cell paint rather than
         /// being set once on the row, so it survives every sort/filter rebind (see the comment
         /// where this is wired up in BuildLayout).</summary>
         private void Grid_CellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)
         {
             if (e.RowIndex < 0 || e.RowIndex >= _grid.Rows.Count) return;
-            if (_grid.Columns[e.ColumnIndex].DataPropertyName != "RunningText") return;
             if (_grid.Rows[e.RowIndex].DataBoundItem is not ServiceRow row) return;
-            if (!row.Running) return;   // leave Stopped cells at the grid's default styling
 
-            e.CellStyle.BackColor = RunningBack;
-            e.CellStyle.ForeColor = RunningFore;
+            switch (_grid.Columns[e.ColumnIndex].DataPropertyName)
+            {
+                case "RunningText":
+                    if (!row.Running) return;   // leave Stopped cells at the grid's default styling
+                    e.CellStyle.BackColor = RunningBack;
+                    e.CellStyle.ForeColor = RunningFore;
+                    break;
+
+                case "StartTypeText":
+                    if (row.StartTypeText == "Automatic (Delayed)")
+                        e.CellStyle.BackColor = AutomaticDelayedBack;
+                    else if (row.StartTypeText == "Automatic")
+                        e.CellStyle.BackColor = AutomaticBack;
+                    else
+                        return;   // Manual/Disabled/Boot/System - default styling
+                    e.CellStyle.ForeColor = RunningFore;
+                    break;
+            }
         }
 
         private void BuildRowContextMenu()

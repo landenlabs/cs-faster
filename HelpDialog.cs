@@ -3,6 +3,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
 namespace Faster
@@ -44,6 +45,7 @@ namespace Faster
             // for the "Search web for this service" row menu item (MainForm.SearchSelectedService).
             text.LinkClicked += (_, e) =>
             {
+                if (e.LinkText == null) return;   // LinkText is nullable; nothing to open if so
                 try
                 {
                     Process.Start(new ProcessStartInfo(e.LinkText) { UseShellExecute = true });
@@ -66,6 +68,41 @@ namespace Faster
             Controls.Add(bottom);
             AcceptButton = closeBtn;
             CancelButton = closeBtn;
+
+            // Read Theme.Current once, here at construction - same reasoning as NewListDialog:
+            // this dialog is modal, so the toolbar's theme-toggle button can't be reached (or
+            // change anything) while it's open.
+            Theme.ApplyToTree(this);
+
+            // ApplyToTree just set the whole box's default ForeColor - style the detected URLs
+            // explicitly afterward (blue + underline) rather than relying on DetectUrls' own
+            // rendering, which varies by Windows version and would otherwise just inherit that
+            // same default text color.
+            StyleLinks(text);
+        }
+
+        /// <summary>The RichTextBox's native scrollbar only picks up ApplyToTree's
+        /// SetWindowTheme call once its handle actually exists - see MainForm's own OnShown
+        /// override for the same reason.</summary>
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            Theme.ApplyScrollbarTheme(this);
+        }
+
+        /// <summary>Colors every detected http(s) URL in <paramref name="rtb"/> blue + underlined
+        /// (<see cref="Theme.Link"/>) via per-run SelectionColor/SelectionFont, rather than relying
+        /// on DetectUrls' own link rendering - that only guarantees the text is clickable, not that
+        /// it looks like a link, and its actual appearance varies by Windows version/theme.</summary>
+        private static void StyleLinks(RichTextBox rtb)
+        {
+            foreach (Match m in Regex.Matches(rtb.Text, @"https?://\S+"))
+            {
+                rtb.Select(m.Index, m.Length);
+                rtb.SelectionColor = Theme.Link;
+                rtb.SelectionFont = new Font(rtb.Font, FontStyle.Underline);
+            }
+            rtb.Select(0, 0);   // clear the selection highlight left over from the loop above
         }
 
         private static string BuildHelpText() => string.Join(Environment.NewLine, new[]
@@ -110,6 +147,9 @@ namespace Faster
             "- Some actions (Activate, Restore All, Re-capture Baseline) need Administrator. The",
             "  \"Run as Admin\" button, the purple dot on those buttons, and the status bar all flag",
             "  this - clicking one while unelevated offers to relaunch as Administrator first.",
+            "",
+            "- The half-black/half-white circle just left of this Help button toggles light/dark",
+            "  theme; the choice is remembered for next launch.",
             "",
             "Links",
             "",

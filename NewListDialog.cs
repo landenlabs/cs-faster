@@ -149,7 +149,13 @@ namespace Faster
                     var action = bulkActionCombo.SelectedItem is ServiceTargetAction a2 ? a2 : ServiceTargetAction.Stop;
                     var startType = bulkStartTypeCombo.SelectedItem is ServiceStartMode m2 ? m2 : ServiceStartMode.Disabled;
                     bool delayed = bulkDelayedCheck.Checked;
-                    foreach (var row in _rows) { row.Action = action; row.StartType = startType; row.Delayed = delayed; }
+                    foreach (var row in _rows)
+                    {
+                        if (row is null) continue;
+                        row.Action = action;
+                        row.StartType = startType;
+                        row.Delayed = delayed;
+                    }
                     _rows.ResetBindings();
                 };
                 bulkPanel.Controls.AddRange(new Control[]
@@ -260,6 +266,20 @@ namespace Faster
             }
 
             Controls.AddRange(controls.ToArray());
+
+            // Read Theme.Current once, here at construction - this dialog is modal (ShowDialog),
+            // so the toolbar's theme-toggle button is unreachable for as long as it's open; no
+            // need for a live Theme.Changed subscription like MainForm's.
+            Theme.ApplyToTree(this);
+        }
+
+        /// <summary>_grid's native scrollbar only picks up ApplyToTree's SetWindowTheme call once
+        /// its handle actually exists, which isn't yet true at construction time - see MainForm's
+        /// own OnShown override for the same reason.</summary>
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            Theme.ApplyScrollbarTheme(this);
         }
 
         private void Grid_CellFormatting(object? sender, DataGridViewCellFormattingEventArgs e)

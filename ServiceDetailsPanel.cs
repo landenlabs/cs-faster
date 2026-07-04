@@ -41,7 +41,6 @@ namespace Faster
         private static readonly Font SectionTitleFont = new("Segoe UI", 9.5f, FontStyle.Bold);
         private static readonly Font LabelFont = new("Segoe UI", 9f, FontStyle.Bold);
         private static readonly Font ValueFont = new("Segoe UI", 9f, FontStyle.Regular);
-        private static readonly Color LabelColor = Color.FromArgb(60, 60, 60);
 
         public ServiceDetailsPanel(int contentWidth = 300)
         {
@@ -99,7 +98,7 @@ namespace Faster
             {
                 Text = "Select a service in the grid to see its details here.",
                 Font = ValueFont,
-                ForeColor = SystemColors.GrayText,
+                ForeColor = Theme.Subtle,
                 AutoSize = true,
                 MaximumSize = new Size(_contentWidth, 0),
             });
@@ -150,6 +149,7 @@ namespace Faster
             {
                 Text = a.DisplayName,
                 Font = TitleFont,
+                ForeColor = Theme.Text,
                 AutoSize = true,
                 MaximumSize = new Size(_contentWidth, 0),
                 Margin = new Padding(2, 2, 2, 10),
@@ -238,7 +238,7 @@ namespace Faster
                 {
                     Text = label,
                     Font = LabelFont,
-                    ForeColor = LabelColor,
+                    ForeColor = Theme.Subtle,
                     AutoSize = true,
                     Dock = DockStyle.Fill,
                     TextAlign = ContentAlignment.MiddleRight,
@@ -248,6 +248,7 @@ namespace Faster
                 {
                     Text = string.IsNullOrEmpty(value) ? "-" : value,
                     Font = ValueFont,
+                    ForeColor = Theme.Text,
                     AutoSize = true,
                     Dock = DockStyle.Fill,
                     TextAlign = ContentAlignment.MiddleLeft,
@@ -261,6 +262,7 @@ namespace Faster
             {
                 Text = title,
                 Font = SectionTitleFont,
+                ForeColor = Theme.Text,
                 Dock = DockStyle.Fill,
                 AutoSize = true,
                 Padding = new Padding(0, 0, 0, 4),
@@ -293,6 +295,7 @@ namespace Faster
             {
                 Text = title,
                 Font = SectionTitleFont,
+                ForeColor = Theme.Text,
                 Dock = DockStyle.Fill,
                 AutoSize = true,
                 Padding = new Padding(0, 0, 0, 4),
@@ -302,6 +305,7 @@ namespace Faster
             {
                 Text = string.IsNullOrWhiteSpace(text) ? "(no description available)" : text,
                 Font = ValueFont,
+                ForeColor = Theme.Text,
                 Dock = DockStyle.Fill,
                 AutoSize = true,
                 MaximumSize = new Size(_contentWidth, 0),

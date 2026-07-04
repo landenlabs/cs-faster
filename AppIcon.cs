@@ -9,12 +9,13 @@ using System.Reflection;
 namespace Faster
 {
     /// <summary>
-    /// Loads the app's icon/logo (<c>icon.ico</c> / <c>icon.png</c>) for use as every window's
-    /// title-bar/taskbar icon and as the image shown in the "About" tab. Reads from the embedded
-    /// resource baked into the exe first (works inside a self-contained single-file publish),
-    /// falling back to a loose file next to the exe for a debug run from the build folder.
-    /// Deliberately smaller than cs-b4browse's <c>EmbeddedAssets.cs</c>: Faster only ever needs
-    /// this one icon, so there's no need for that file's more general lookup-by-name API.
+    /// Loads the app's images (<c>icon.ico</c> / <c>icon.png</c> / <c>dark-light.png</c>) for use
+    /// as every window's title-bar/taskbar icon, the "About" tab's image, and the toolbar's theme
+    /// toggle icon. Reads from the embedded resource baked into the exe first (works inside a
+    /// self-contained single-file publish), falling back to a loose file next to the exe for a
+    /// debug run from the build folder. Deliberately smaller than cs-b4browse's
+    /// <c>EmbeddedAssets.cs</c>: Faster only ever needs these few fixed images, so there's no
+    /// need for that file's more general lookup-by-name API.
     /// </summary>
     internal static class AppIcon
     {
@@ -34,11 +35,19 @@ namespace Faster
         /// <summary>The About tab's logo image (icon.png) - null if it couldn't be loaded.
         /// Returns a fresh Image each call (the caller owns disposal); AboutPanel is created once
         /// per MainForm so this only runs once in practice.</summary>
-        public static Image? LoadImage()
+        public static Image? LoadImage() => LoadImageFile("icon.png");
+
+        /// <summary>The theme-toggle button's icon (dark-light.png, a black/white circle) - null
+        /// if it couldn't be loaded. Shown as-is regardless of the current theme (same choice
+        /// cs-b4browse makes for the same image) rather than tinted, since a half-black/half-white
+        /// icon already reads as "light/dark" without needing to match either palette.</summary>
+        public static Image? LoadThemeToggleImage() => LoadImageFile("dark-light.png");
+
+        private static Image? LoadImageFile(string fileName)
         {
             try
             {
-                using var source = OpenResourceOrFile("icon.png");
+                using var source = OpenResourceOrFile(fileName);
                 if (source == null) return null;
 
                 // GDI+ can keep referencing the backing stream after Image.FromStream returns
