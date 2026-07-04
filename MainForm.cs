@@ -143,6 +143,11 @@ namespace Faster
             // (unparented, default-sized) is far smaller than 680 and would throw.
             var split = new SplitContainer { Dock = DockStyle.Fill, Width = 1040, Height = 600 };
             split.SplitterDistance = 680;   // Width is fixed above, so this is now in-range
+            // FixedPanel defaults to None, which keeps SplitterDistance as a PERCENTAGE of the
+            // container on resize (both panels grow/shrink proportionally). Panel2 (the saved-
+            // lists side) should instead stay a constant pixel width and let Panel1 (the grid)
+            // absorb all the resize, so pin it here.
+            split.FixedPanel = FixedPanel.Panel2;
 
             _grid.Dock = DockStyle.Fill;
             _grid.AllowUserToAddRows = false;

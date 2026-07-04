@@ -50,7 +50,7 @@ namespace Faster
             var pidByService = QueryAllPids();
             var servicesByPid = pidByService
                 .Where(kv => kv.Value != 0)
-                .GroupBy(kv => kv.Value)
+                .GroupBy(kv => (int)kv.Value)
                 .ToDictionary(g => g.Key, g => g.Select(kv => kv.Key).ToList());
 
             var distinctPids = servicesByPid.Keys.ToList();
