@@ -6,6 +6,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.ServiceProcess;
 using System.Text;
 using System.Threading.Tasks;
@@ -200,6 +201,11 @@ namespace Faster
             var right = new Panel { Dock = DockStyle.Fill };
             var listsLabel = new Label { Text = "Saved lists", Dock = DockStyle.Top, Height = 20, Padding = new Padding(4, 4, 0, 0) };
             _listsBox.Dock = DockStyle.Fill;
+            // Selecting a saved list checks exactly its services in the grid (and unchecks
+            // everything else), so "Activate Selected List" and "what's in this list" are
+            // visually the same thing - also fires (harmlessly) with SelectedIndex=-1 whenever
+            // LoadData() repopulates _listsBox.Items, which ApplyListSelectionToChecks ignores.
+            _listsBox.SelectedIndexChanged += (_, _) => ApplyListSelectionToChecks();
             var btnPanel = new FlowLayoutPanel
                 { Dock = DockStyle.Bottom, Height = 190, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(4) };
             var newBtn = new Button { Text = "New List From Checked...", Width = 220 };
@@ -540,18 +546,78 @@ namespace Faster
         private void OpenServicesMsc()
         {
             // services.msc has no supported command-line switch to preselect a specific service
-            // (unlike, say, devmgmt.msc's device paths) - this opens the general list. Its list
-            // view supports type-ahead-to-jump on the display name, so finding the row by hand
-            // afterward is quick.
+            // (unlike, say, devmgmt.msc's device paths). Best-effort workaround: once the console
+            // window appears, type the display name at it - the Services snap-in's list view has
+            // built-in type-ahead search on the "Name" column, so this lands on (and selects) the
+            // matching row, the same as if the user had typed it by hand. See JumpToServiceAsync.
+            string? displayName = SelectedRow()?.DisplayName;
             try
             {
-                Process.Start(new ProcessStartInfo("services.msc") { UseShellExecute = true });
+                var proc = Process.Start(new ProcessStartInfo("services.msc") { UseShellExecute = true });
+                if (proc != null && !string.IsNullOrEmpty(displayName))
+                    _ = JumpToServiceAsync(proc, displayName);
             }
             catch (Exception ex)
             {
                 MessageBox.Show(this, $"Could not open services.msc: {ex.Message}", "Faster",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        /// <summary>
+        /// Waits for the newly-launched MMC window to appear, brings it to the foreground, and
+        /// types the service's display name at it so the Services snap-in's own type-ahead
+        /// search jumps to (and selects) that row - there's no supported API to preselect a
+        /// service directly. This is UI automation, not a documented feature, so it's timing-
+        /// sensitive: on a slow machine the window or its service list may not be fully ready
+        /// when the keys are sent, in which case services.msc still opens fine, just without the
+        /// jump. Runs the wait off the UI thread (it polls MainWindowHandle in a loop) and
+        /// resumes on the UI thread to call SetForegroundWindow/SendKeys, both of which need to
+        /// run on a thread with a message loop.
+        /// </summary>
+        private static async Task JumpToServiceAsync(Process mmcProcess, string displayName)
+        {
+            IntPtr handle = await Task.Run(() => WaitForMainWindow(mmcProcess, TimeSpan.FromSeconds(8)));
+            if (handle == IntPtr.Zero) return;   // gave up - console is still open, just not auto-selected
+
+            SetForegroundWindow(handle);
+            // Give the snap-in time to finish loading the service list - type-ahead can only
+            // match rows that have actually been populated by then.
+            await Task.Delay(800);
+
+            SendKeys.SendWait(EscapeForSendKeys(displayName));
+        }
+
+        private static IntPtr WaitForMainWindow(Process process, TimeSpan timeout)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadline)
+            {
+                try
+                {
+                    process.Refresh();
+                    if (process.MainWindowHandle != IntPtr.Zero) return process.MainWindowHandle;
+                }
+                catch { /* process may have exited, or not be queryable yet */ }
+                Task.Delay(150).Wait();
+            }
+            return IntPtr.Zero;
+        }
+
+        /// <summary>SendKeys treats + ^ % ~ ( ) {{ }} [ ] as special - escape them so a display
+        /// name containing any of those characters is typed literally.</summary>
+        private static string EscapeForSendKeys(string text)
+        {
+            var sb = new StringBuilder();
+            foreach (char c in text)
+            {
+                if ("+^%~(){}[]".IndexOf(c) >= 0) sb.Append('{').Append(c).Append('}');
+                else sb.Append(c);
+            }
+            return sb.ToString();
         }
 
         /// <summary>Pushes the currently selected row's fields into the "Details" tab. Wired to
@@ -756,6 +822,30 @@ namespace Faster
 
             ListStore.Upsert(list);
             LoadData();
+        }
+
+        /// <summary>Checks exactly the services belonging to the newly-selected saved list in the
+        /// grid (unchecking everything else) - silent no-op when nothing is selected (e.g. the
+        /// -1 SelectedIndex that fires while LoadData() is repopulating _listsBox.Items), unlike
+        /// SelectedList() below which is used by explicit button clicks and prompts instead.</summary>
+        private void ApplyListSelectionToChecks()
+        {
+            int i = _listsBox.SelectedIndex;
+            if (i < 0 || i >= _lists.Count) return;
+
+            var list = _lists[i];
+            var namesInList = new HashSet<string>(
+                list.Items.Select(item => item.ServiceName), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var row in _allRows)
+                row.Selected = namesInList.Contains(row.ServiceName);
+
+            // ServiceRow doesn't implement INotifyPropertyChanged, so the grid's checkbox cells
+            // won't notice the change on their own - ResetBindings forces every bound row to be
+            // re-read, same idea as ApplyFilterAndSort's full rebind but without reshuffling sort/
+            // filter state.
+            _rows.ResetBindings();
+            _status.Text = $"Checked {namesInList.Count} service(s) from '{list.Name}'.";
         }
 
         private ServiceListDefinition? SelectedList()

@@ -19,8 +19,23 @@ namespace Faster
     public sealed class ServiceDetailsPanel : UserControl
     {
         private readonly FlowLayoutPanel _flow;
-        private readonly int _contentWidth;
+        private int _contentWidth;
         private string? _currentServiceName;
+
+        // Cached args from the last ShowService call, so a manual splitter/window resize can
+        // rebuild the same service's sections at the new width - see OnResize. Sizing the label/
+        // value columns and the wrap width of long text is baked into each Label at creation time
+        // (AutoSize + MaximumSize), so simply re-anchoring the existing controls wouldn't make
+        // wrapped text reflow to use newly available space; rebuilding with the new width does.
+        private (string ServiceName, string DisplayName, string CategoryLabel, string Purpose,
+            string StartTypeText, string RunningText, string BaselineText)? _lastArgs;
+
+        // WMI/metrics are slow to fetch (a WMI query + a ~300ms CPU sample), so a resize-driven
+        // rebuild (same service, just a new width) must reuse whatever was already fetched
+        // instead of re-querying - _extrasFetchedFor tracks which service that cache belongs to.
+        private string? _extrasFetchedFor;
+        private (string, string)[]? _cachedWmiRows;
+        private (string, string)[]? _cachedMetricRows;
 
         private static readonly Font TitleFont = new("Segoe UI", 12f, FontStyle.Bold);
         private static readonly Font SectionTitleFont = new("Segoe UI", 9.5f, FontStyle.Bold);
@@ -49,6 +64,32 @@ namespace Faster
             };
             Controls.Add(_flow);
             ShowPlaceholder();
+
+            // Dragging the SplitContainer's splitter (or resizing the whole window) changes this
+            // control's Width - re-derive the usable content width from it and rebuild so the
+            // tables/text stretch (and long values re-wrap) to use the full new width, instead of
+            // staying pinned at whatever width was current when they were first built.
+            Resize += (_, _) => OnResized();
+        }
+
+        private void OnResized()
+        {
+            // Leave room for the vertical scrollbar (it only appears once content is taller than
+            // the visible area, but reserving its width up front avoids a horizontal scrollbar
+            // fighting the vertical one) plus the flow panel's own left/right padding.
+            int newWidth = Math.Max(Width - SystemInformation.VerticalScrollBarWidth - 24, 160);
+            if (Math.Abs(newWidth - _contentWidth) < 4) return;   // ignore sub-pixel/noise resizes
+            _contentWidth = newWidth;
+
+            if (_lastArgs is { } a)
+            {
+                ShowService(a.ServiceName, a.DisplayName, a.CategoryLabel, a.Purpose,
+                    a.StartTypeText, a.RunningText, a.BaselineText);
+            }
+            else
+            {
+                ShowPlaceholder();
+            }
         }
 
         private void ShowPlaceholder()
@@ -76,13 +117,38 @@ namespace Faster
             string startTypeText, string runningText, string baselineText)
         {
             _currentServiceName = serviceName;
+            _lastArgs = (serviceName, displayName, categoryLabel, purpose, startTypeText, runningText, baselineText);
+
+            RebuildLayout();
+
+            // Only re-fetch WMI/metrics for an actually-new service - a resize-driven rebuild of
+            // the SAME service (see OnResized) reuses whatever's already cached instead of
+            // re-querying WMI and re-sampling CPU on every few pixels of a splitter drag.
+            if (_extrasFetchedFor != serviceName)
+            {
+                _extrasFetchedFor = serviceName;
+                _cachedWmiRows = null;
+                _cachedMetricRows = null;
+                _ = LoadExtrasAsync(serviceName);
+            }
+        }
+
+        /// <summary>(Re)builds the section stack from `_lastArgs` at the current `_contentWidth` -
+        /// shared by ShowService (new selection) and OnResized (same selection, new width).</summary>
+        private void RebuildLayout()
+        {
+            if (_lastArgs is not { } a)
+            {
+                ShowPlaceholder();
+                return;
+            }
 
             _flow.SuspendLayout();
             _flow.Controls.Clear();
 
             _flow.Controls.Add(new Label
             {
-                Text = displayName,
+                Text = a.DisplayName,
                 Font = TitleFont,
                 AutoSize = true,
                 MaximumSize = new Size(_contentWidth, 0),
@@ -91,22 +157,20 @@ namespace Faster
 
             _flow.Controls.Add(BuildTableGroup("Overview", new[]
             {
-                ("Service name:", serviceName),
-                ("Display name:", displayName),
-                ("Category:", categoryLabel),
-                ("Start type:", startTypeText),
-                ("Current state:", runningText),
-                ("Baseline:", baselineText),
+                ("Service name:", a.ServiceName),
+                ("Display name:", a.DisplayName),
+                ("Category:", a.CategoryLabel),
+                ("Start type:", a.StartTypeText),
+                ("Current state:", a.RunningText),
+                ("Baseline:", a.BaselineText),
             }));
 
-            _flow.Controls.Add(BuildTextGroup("Purpose", purpose));
+            _flow.Controls.Add(BuildTextGroup("Purpose", a.Purpose));
 
-            _flow.Controls.Add(BuildTableGroup("Windows Details (WMI)", new[] { ("Loading...", "") }, "wmi"));
-            _flow.Controls.Add(BuildTableGroup("Resource Usage", new[] { ("Loading...", "") }, "metrics"));
+            _flow.Controls.Add(BuildTableGroup("Windows Details (WMI)", _cachedWmiRows ?? new[] { ("Loading...", "") }, "wmi"));
+            _flow.Controls.Add(BuildTableGroup("Resource Usage", _cachedMetricRows ?? new[] { ("Loading...", "") }, "metrics"));
 
             _flow.ResumeLayout();
-
-            _ = LoadExtrasAsync(serviceName);
         }
 
         private async Task LoadExtrasAsync(string serviceName)
@@ -116,8 +180,11 @@ namespace Faster
 
             if (IsDisposed || serviceName != _currentServiceName) return;   // selection moved on
 
-            ReplaceGroup("wmi", BuildTableGroup("Windows Details (WMI)", wmiRows, "wmi"));
-            ReplaceGroup("metrics", BuildTableGroup("Resource Usage", FormatMetricRows(metrics, serviceName), "metrics"));
+            _cachedWmiRows = wmiRows;
+            _cachedMetricRows = FormatMetricRows(metrics, serviceName);
+
+            ReplaceGroup("wmi", BuildTableGroup("Windows Details (WMI)", _cachedWmiRows, "wmi"));
+            ReplaceGroup("metrics", BuildTableGroup("Resource Usage", _cachedMetricRows, "metrics"));
         }
 
         /// <summary>Swaps a named placeholder section for its finished version, in place, so the
