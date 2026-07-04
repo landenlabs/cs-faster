@@ -9,13 +9,23 @@ both a GUI and a headless command-line mode. See `README.md` for the user-facing
 - **Namespace / assembly:** `Faster`. Single project, flat directory (no subfolders) - sibling
   project to `cs-b4browse`, same author/conventions, but a separate codebase (no shared code).
 - **Author:** Dennis Lang — LanDen Labs (2026). Apache-2.0.
-- **Elevation:** only for commands that change something - `--activate`, `--restore`,
-  `--recapture-baseline`, and the GUI. `Program.Main` checks `WindowsPrincipal.IsInRole(Administrator)`
-  for just those and, if not elevated, relaunches itself via `ShellExecute`'s `"runas"` verb (UAC
-  prompt). The read-only commands (`--help`, `--list`, `--show`, `--delete`, `--baseline`) never
-  check elevation, and deliberately run before that check in `Main` - a UAC relaunch spawns a new
-  process whose console can't reattach to the caller's terminal, which would otherwise swallow
-  `--help`/`--list` output too. `app.manifest` declares `asInvoker`, not `requireAdministrator`: a
+- **Elevation:** `Elevation.cs` (`IsAdmin`, `RelaunchAsAdmin()`) is the one source of truth,
+  used by both `Program.cs` and `MainForm.cs` - mirrors `cs-b4browse`'s `Elevation.cs`. Only the
+  headless mutating commands (`--activate`, `--restore`, `--recapture-baseline`) auto-elevate in
+  `Program.Main`, relaunching via `ShellExecute`'s `"runas"` verb (UAC prompt) if not already
+  elevated; the read-only commands (`--help`, `--list`, `--show`, `--delete`, `--baseline`) never
+  check elevation and deliberately run before that check - a UAC relaunch spawns a new process
+  whose console can't reattach to the caller's terminal, which would otherwise swallow
+  `--help`/`--list` output too. The **GUI always launches unelevated**, regardless of the
+  process's actual rights, and elevates on demand instead: a "Run as Admin" toolbar button (first/
+  leftmost, only present when not already elevated), a purple-dot call-out drawn on "Activate
+  Selected List" / "Restore All to Baseline" (`MainForm.AddAdminDot`, also only when not
+  elevated), a bottom-status-bar indicator ("Administrator" in blue / "Standard user" in purple,
+  click to elevate - `MainForm.UpdateAdminStatusLabel`), and a relaunch-first prompt if either of
+  those two buttons is actually clicked while unelevated (`MainForm.ConfirmElevateForAction`) -
+  since Windows has no way to elevate a running process, only to start a new elevated one,
+  answering "yes" there relaunches Faster and exits the current instance; the original click
+  doesn't proceed. `app.manifest` declares `asInvoker`, not `requireAdministrator`: a
   manifest-declared requireAdministrator caused a side-by-side activation error on some SDKs, so
   elevation is requested at runtime instead.
 
@@ -60,6 +70,7 @@ Faster.exe --help
 | `AppPaths.cs` | `%ProgramData%\Faster` paths + atomic (temp+move) JSON writes. |
 | `BaselineStore.cs` | Capture/load/save the baseline; `LoadOrCapture()` is the "first run" entry point. |
 | `ListStore.cs` | Load/save/CRUD `lists.json`. |
+| `Elevation.cs` | `IsAdmin` + `RelaunchAsAdmin()` - shared by `Program.cs` and `MainForm.cs`. |
 | `RegistryHelpers.cs` | Read-only: `DelayedAutoStart` flag, trigger-start presence. |
 | `ServiceOps.cs` | The engine - `sc.exe config`, dependency-aware stop/start, `Activate()`. |
 | `Program.cs` | Entry point - argument parsing, `AttachConsole` for headless output, GUI launch. |

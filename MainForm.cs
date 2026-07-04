@@ -29,6 +29,11 @@ namespace Faster
         private readonly Button _metricsBtn = new();
         private readonly ServiceDetailsPanel _detailsPanel = new(300);
 
+        // ---- Elevation affordances (mirrors cs-b4browse's Elevation.cs + MainForm pattern) --- //
+        private readonly Label _adminStatusLabel = new();
+        private readonly ToolTip _adminTip = new();
+        private static readonly Color AdminAccent = Color.MediumPurple;
+
         // Metric columns are built once but only added to the grid on the first "Metrics" click -
         // the whole point of the button is that the grid starts up fast without per-process
         // sampling, so these must not exist in the grid until the user actually asks for them.
@@ -123,18 +128,42 @@ namespace Faster
         private void BuildLayout()
         {
             var top = new Panel { Dock = DockStyle.Top, Height = 44 };
-            var refreshBtn = new Button { Text = "Refresh", Left = 8, Top = 8, Width = 90 };
+
+            // "Run as Admin" is the first (leftmost) toolbar button, but only exists at all when
+            // not already elevated - there's nothing for it to do otherwise. Everything else is
+            // positioned relative to it via a running x cursor instead of hardcoded Lefts, so the
+            // rest of the toolbar shifts over cleanly whichever way this comes out.
+            int x = 8;
+            if (!Elevation.IsAdmin)
+            {
+                var adminBtn = new Button { Text = "Run as Admin", Left = x, Top = 8, Width = 110 };
+                adminBtn.ForeColor = AdminAccent;
+                adminBtn.Click += (_, _) => RelaunchAsAdmin();
+                _adminTip.SetToolTip(adminBtn,
+                    "Relaunch Faster as Administrator - required to activate or restore a list.");
+                top.Controls.Add(adminBtn);
+                x = adminBtn.Right + 8;
+            }
+
+            var refreshBtn = new Button { Text = "Refresh", Left = x, Top = 8, Width = 90 };
             refreshBtn.Click += (_, _) => LoadData();
+            x = refreshBtn.Right + 8;
+
             _metricsBtn.Text = "Metrics";
-            _metricsBtn.Left = 106;
+            _metricsBtn.Left = x;
             _metricsBtn.Top = 8;
             _metricsBtn.Width = 110;
             _metricsBtn.Click += async (_, _) => await ToggleMetricsAsync();
-            var recaptureBtn = new Button { Text = "Re-capture Baseline", Left = 224, Top = 8, Width = 150 };
+            x = _metricsBtn.Right + 8;
+
+            var recaptureBtn = new Button { Text = "Re-capture Baseline", Left = x, Top = 8, Width = 150 };
             recaptureBtn.Click += (_, _) => RecaptureBaseline();
+            x = recaptureBtn.Right + 10;
+
             _baselineLabel.AutoSize = true;
-            _baselineLabel.Left = 384;
+            _baselineLabel.Left = x;
             _baselineLabel.Top = 15;
+
             top.Controls.Add(refreshBtn);
             top.Controls.Add(_metricsBtn);
             top.Controls.Add(recaptureBtn);
@@ -224,6 +253,19 @@ namespace Faster
             btnPanel.Controls.Add(showBtn);
             btnPanel.Controls.Add(deleteBtn);
 
+            // Purple dot call-out on the two buttons that touch live service state - both need
+            // Administrator, so both prompt to relaunch elevated (see TryElevateForAction) the
+            // moment you click them while running as a standard user. No dot once elevated: at
+            // that point clicking them just works, nothing to warn about. Drawn via each
+            // button's own Paint event (not a separate overlay control) so it doesn't depend on
+            // knowing the button's absolute position inside the FlowLayoutPanel, which isn't
+            // settled until the parent actually lays out.
+            if (!Elevation.IsAdmin)
+            {
+                AddAdminDot(activateBtn);
+                AddAdminDot(restoreAllBtn);
+            }
+
             right.Controls.Add(_listsBox);
             right.Controls.Add(listsLabel);
             right.Controls.Add(btnPanel);
@@ -240,14 +282,87 @@ namespace Faster
             rightTabs.TabPages.Add(detailsTab);
             split.Panel2.Controls.Add(rightTabs);
 
-            _status.Dock = DockStyle.Bottom;
-            _status.Height = 24;
+            // Bottom bar: an elevation indicator (left, fixed width, click-to-elevate) + the
+            // existing free-text status message filling the rest - same left-cluster-then-fill
+            // shape as cs-b4browse's status bar, just with one indicator instead of several.
+            var statusBar = new Panel { Dock = DockStyle.Bottom, Height = 24 };
+            _adminStatusLabel.Dock = DockStyle.Left;
+            _adminStatusLabel.Width = 150;
+            _adminStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
+            _adminStatusLabel.Padding = new Padding(6, 0, 0, 0);
+            _adminStatusLabel.Click += (_, _) => RelaunchAsAdmin();
+            UpdateAdminStatusLabel();
+
+            _status.Dock = DockStyle.Fill;
             _status.TextAlign = ContentAlignment.MiddleLeft;
             _status.Padding = new Padding(6, 0, 0, 0);
 
+            statusBar.Controls.Add(_status);
+            statusBar.Controls.Add(_adminStatusLabel);
+
             Controls.Add(split);
-            Controls.Add(_status);
+            Controls.Add(statusBar);
             Controls.Add(top);
+        }
+
+        /// <summary>Sets the bottom-left elevation label's text/color/cursor/tooltip for the
+        /// current process - "Administrator" in blue (nothing to click), or "Standard user" in
+        /// purple with a click-to-elevate cursor, matching cs-b4browse's status bar.</summary>
+        private void UpdateAdminStatusLabel()
+        {
+            bool admin = Elevation.IsAdmin;
+            _adminStatusLabel.Text = admin ? "Administrator" : "Standard user";
+            _adminStatusLabel.ForeColor = admin ? Color.FromArgb(0, 90, 200) : AdminAccent;
+            _adminStatusLabel.Cursor = admin ? Cursors.Default : Cursors.Hand;
+            _adminTip.SetToolTip(_adminStatusLabel, admin
+                ? "Running as Administrator."
+                : "Running as a standard user. Click to relaunch as Administrator.");
+        }
+
+        /// <summary>Relaunches Faster elevated via UAC and exits this instance. No-op if already
+        /// elevated; shows a message if the user declines the prompt or it otherwise fails.</summary>
+        private void RelaunchAsAdmin()
+        {
+            if (Elevation.IsAdmin) return;
+            if (Elevation.RelaunchAsAdmin())
+            {
+                Application.Exit();
+            }
+            else
+            {
+                MessageBox.Show(this, "Could not relaunch Faster as Administrator - the prompt " +
+                    "may have been cancelled.", "Faster", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        /// <summary>If already elevated, always allowed - returns true immediately. Otherwise
+        /// asks whether to relaunch as Administrator before doing <paramref name="action"/> (e.g.
+        /// activating a list would otherwise just fail service-by-service with access-denied
+        /// errors). Answering yes relaunches (and exits this instance); either way this specific
+        /// attempt doesn't proceed in the current, unelevated process - Windows has no way to
+        /// elevate a process already running, only to start a new elevated one.</summary>
+        private bool ConfirmElevateForAction(string action)
+        {
+            if (Elevation.IsAdmin) return true;
+
+            var result = MessageBox.Show(this,
+                $"{action} requires Administrator rights.\n\nRelaunch Faster as Administrator now?",
+                "Faster", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (result == DialogResult.Yes) RelaunchAsAdmin();
+            return false;
+        }
+
+        /// <summary>Draws a small purple dot over a button's top-right corner via its own Paint
+        /// event - avoids needing to know the button's absolute position inside a
+        /// FlowLayoutPanel, which isn't settled until the parent actually lays out.</summary>
+        private static void AddAdminDot(Button btn)
+        {
+            btn.Paint += (_, e) =>
+            {
+                const int d = 8;
+                using var brush = new SolidBrush(AdminAccent);
+                e.Graphics.FillEllipse(brush, btn.Width - d - 5, 4, d, d);
+            };
         }
 
         /// <summary>
@@ -864,6 +979,7 @@ namespace Faster
         {
             var list = SelectedList();
             if (list == null) return;
+            if (!ConfirmElevateForAction($"Activating '{list.Name}'")) return;
 
             var confirm = MessageBox.Show(this,
                 $"Activate '{list.Name}'? This changes {list.Items.Count} service(s) now.",
@@ -911,6 +1027,7 @@ namespace Faster
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
+            if (!ConfirmElevateForAction("Restoring all services to baseline")) return;
 
             var confirm = MessageBox.Show(this,
                 $"Restore ALL {_baseline.Services.Count} service(s) to the baseline captured " +

@@ -21,17 +21,25 @@ Faster.exe --recapture-baseline       # force a fresh baseline capture
 Faster.exe --help                     # usage
 ```
 
-Only `--activate`, `--restore`, `--recapture-baseline`, and the GUI request Administrator -
-`Program.Main` checks whether the process is already elevated and, if not, relaunches itself
-with a UAC prompt (`ShellExecute` + `"runas"`), rather than declaring `requireAdministrator` in
-`app.manifest`. (A manifest-declared `requireAdministrator` caused this app's apphost to fail to
-launch at all with a side-by-side activation error on some SDKs - `app.manifest` here uses
-`asInvoker`, and elevation happens at runtime instead.) `--help`, `--list`, `--show`, `--delete`,
-and `--baseline` are read-only and never elevate, so they always print straight to the calling
-console - no UAC prompt, no risk of losing their output. Because a UAC relaunch spawns a new,
-separate process, running one of the *elevating* commands from a non-elevated terminal means its
-console output may not reliably reattach to that terminal; run from an already-elevated prompt
-if you need to see that output inline.
+Only `--activate`, `--restore`, and `--recapture-baseline` request Administrator on the command
+line - `Program.Main` checks whether the process is already elevated and, if not, relaunches
+itself with a UAC prompt (`Elevation.RelaunchAsAdmin`, `ShellExecute` + `"runas"`), rather than
+declaring `requireAdministrator` in `app.manifest`. (A manifest-declared `requireAdministrator`
+caused this app's apphost to fail to launch at all with a side-by-side activation error on some
+SDKs - `app.manifest` here uses `asInvoker`, and elevation happens at runtime instead.) `--help`,
+`--list`, `--show`, `--delete`, and `--baseline` are read-only and never elevate, so they always
+print straight to the calling console - no UAC prompt, no risk of losing their output. Because a
+UAC relaunch spawns a new, separate process, running one of the *elevating* commands from a
+non-elevated terminal means its console output may not reliably reattach to that terminal; run
+from an already-elevated prompt if you need to see that output inline.
+
+**The GUI always launches unelevated**, no matter what rights the launching process has, and
+elevates on demand instead: a "Run as Admin" button is the first (leftmost) toolbar button
+whenever you're not already elevated, "Activate Selected List" and "Restore All to Baseline" get
+a small purple dot as a heads-up that they need admin, and the bottom-left status label reads
+"Administrator" (blue) or "Standard user" (purple, click to elevate) - same pattern as
+`cs-b4browse`. Clicking Activate or Restore while unelevated offers to relaunch as Administrator
+first rather than letting every service in the list fail with an access-denied error.
 
 ## How it works
 
@@ -74,6 +82,7 @@ concept, not a per-account one.
 - `ServiceSnapshot.cs` / `ServiceListItem.cs` / `ServiceListDefinition.cs` / `Baseline.cs` -
   plain model classes.
 - `AppPaths.cs`, `BaselineStore.cs`, `ListStore.cs` - JSON persistence under `%ProgramData%\Faster`.
+- `Elevation.cs` - `IsAdmin` + `RelaunchAsAdmin()`, shared by `Program.cs` and `MainForm.cs`.
 - `RegistryHelpers.cs` - reads `DelayedAutoStart` and trigger presence from the registry.
 - `ServiceOps.cs` - the engine: `sc.exe config` for start type, dependency-aware stop/start,
   per-item exception isolation.

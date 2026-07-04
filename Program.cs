@@ -1,12 +1,9 @@
 // Copyright (c) 2026 LanDen Labs - Dennis Lang
 
 using System;
-using System.ComponentModel;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Security.Principal;
 using System.Windows.Forms;
 
 namespace Faster
@@ -26,12 +23,17 @@ namespace Faster
     ///             Faster.exe --recapture-baseline        Force a fresh baseline capture.
     ///             Faster.exe --help                      Show usage and exit.
     ///
-    /// --activate/--restore/--recapture-baseline (and the GUI) change a service's configuration
-    /// and need Administrator, so Main checks elevation only for those and, if not elevated,
-    /// relaunches itself with a UAC prompt (rather than declaring requireAdministrator in
-    /// app.manifest, which hit a side-by-side activation error on some SDKs - see app.manifest's
-    /// comment). --help/--list/--show/--delete/--baseline are read-only and never elevate, so
-    /// they always print straight to the calling console with no UAC prompt in the way.
+    /// --activate/--restore/--recapture-baseline change a service's configuration and need
+    /// Administrator, so Main checks elevation for those and, if not elevated, relaunches with a
+    /// UAC prompt (rather than declaring requireAdministrator in app.manifest, which hit a
+    /// side-by-side activation error on some SDKs - see app.manifest's comment).
+    /// --help/--list/--show/--delete/--baseline are read-only and never elevate, so they always
+    /// print straight to the calling console with no UAC prompt in the way.
+    ///
+    /// The GUI itself launches unelevated (asInvoker) regardless of the current process's rights
+    /// - it has its own on-demand affordances (a toolbar "Run as Admin" button, a bottom-bar
+    /// elevation indicator, and a relaunch prompt if you click Activate/Restore while
+    /// unelevated) instead of a UAC prompt blocking every startup. See Elevation.cs and MainForm.
     ///
     /// Author: Dennis Lang - LanDen Labs - 2026
     /// </summary>
@@ -42,10 +44,11 @@ namespace Faster
         {
             // Attach to the calling console FIRST, unconditionally, before anything else has a
             // chance to relaunch this process. If the elevation check below ran first, every
-            // command - including --help - would trip it: TryRelaunchElevated spawns a brand
-            // new process whose "parent" is the UAC broker, not this terminal, so that new
-            // process's own EnsureConsole() can't reattach and its output goes nowhere. Read-only
-            // commands must never reach that relaunch at all - see the elevation gate below.
+            // mutating command - --activate/--restore/--recapture-baseline - would trip it:
+            // Elevation.RelaunchAsAdmin spawns a brand new process whose "parent" is the UAC
+            // broker, not this terminal, so that new process's own EnsureConsole() can't reattach
+            // and its output goes nowhere. Read-only commands must never reach that relaunch at
+            // all - see the elevation gate below.
             EnsureConsole();
 
             var args = Environment.GetCommandLineArgs();
@@ -81,17 +84,22 @@ namespace Faster
                 return;
             }
 
-            // ---- Everything below here can change a service's start type or running state (or
-            // is the GUI, where the user might click Activate at any time) - THIS is the only
-            // path that needs Administrator, so it's the only path that checks elevation. ---- //
+            // ---- Everything below here can change a service's start type or running state -
+            // THIS is the only path that needs Administrator, so it's the only path that checks
+            // elevation. The GUI is deliberately NOT included here: it launches unelevated
+            // regardless, and elevates on demand from inside the window instead (see Elevation.cs
+            // and MainForm's "Run as Admin" button / Activate/Restore relaunch prompt). ---- //
             bool isMutatingCommand = Arg("--activate") != null
                 || args.Any(a => a.Equals("--restore", StringComparison.OrdinalIgnoreCase))
                 || args.Any(a => a.Equals("--recapture-baseline", StringComparison.OrdinalIgnoreCase));
-            bool isGuiLaunch = !isMutatingCommand && args.Length <= 1;
 
-            if ((isMutatingCommand || isGuiLaunch) && !IsElevated())
+            if (isMutatingCommand && !Elevation.IsAdmin)
             {
-                TryRelaunchElevated();
+                if (!Elevation.RelaunchAsAdmin())
+                {
+                    ShowElevationMessage("Administrator privileges are required for this command, " +
+                        "and the elevation prompt was cancelled or failed.");
+                }
                 return;   // either a new elevated process is taking over, or the user cancelled/it
                           // failed and a message was already shown - this process is done either way.
             }
@@ -123,9 +131,10 @@ namespace Faster
                 return;
             }
 
-            // No arguments at all, and elevation is already confirmed above - launch the GUI.
-            // Capture the baseline on first run before the window shows, so the "current config"
-            // grid has something to compare against.
+            // No arguments at all - launch the GUI, unelevated or not (see Elevation.cs/MainForm
+            // for how it elevates on demand from inside the window instead). Capture the baseline
+            // on first run before the window shows, so the "current config" grid has something
+            // to compare against.
             ApplicationConfiguration.Initialize();
             try { BaselineStore.LoadOrCapture(); }
             catch (Exception ex)
@@ -134,47 +143,6 @@ namespace Faster
                     "Faster", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             Application.Run(new MainForm());
-        }
-
-        /// <summary>True if the current process token has the Administrator role.</summary>
-        private static bool IsElevated()
-        {
-            using var identity = WindowsIdentity.GetCurrent();
-            return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
-        }
-
-        /// <summary>
-        /// Relaunches this same exe (with the same command-line arguments) via ShellExecute's
-        /// "runas" verb, which makes Windows show the UAC consent prompt - the runtime
-        /// equivalent of a manifest's requestedExecutionLevel, used here instead of a manifest
-        /// declaration because that hit a side-by-side activation error on some SDKs (see
-        /// app.manifest). Returns true if the elevated process was started (the caller should
-        /// exit either way - this original, unelevated process has nothing further to do).
-        /// </summary>
-        private static bool TryRelaunchElevated()
-        {
-            try
-            {
-                string exe = Environment.ProcessPath
-                    ?? Process.GetCurrentProcess().MainModule?.FileName
-                    ?? throw new InvalidOperationException("Could not determine this executable's path.");
-
-                var psi = new ProcessStartInfo(exe) { UseShellExecute = true, Verb = "runas" };
-                foreach (var a in Environment.GetCommandLineArgs().Skip(1)) psi.ArgumentList.Add(a);
-
-                Process.Start(psi);
-                return true;
-            }
-            catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)   // ERROR_CANCELLED - user clicked "No"
-            {
-                ShowElevationMessage("Administrator privileges are required to run Faster, and the prompt was cancelled.");
-                return false;
-            }
-            catch (Exception ex)
-            {
-                ShowElevationMessage($"Could not restart Faster as Administrator: {ex.Message}");
-                return false;
-            }
         }
 
         /// <summary>Reports an elevation failure both ways, since at this point in Main we don't
@@ -200,8 +168,9 @@ namespace Faster
         /// terminal, so THAT process's own call to this method can't reattach and its output
         /// goes nowhere. That's exactly why read-only commands (--help, --list, --show, --delete,
         /// --baseline) never trigger a relaunch - they run right here, already attached. Only
-        /// --activate/--restore/--recapture-baseline/GUI elevate, so only those can hit this
-        /// limitation; run from an already-elevated prompt for their output to appear inline.
+        /// --activate/--restore/--recapture-baseline elevate (the GUI no longer does), so only
+        /// those can hit this limitation; run from an already-elevated prompt for their output
+        /// to appear inline.
         /// </summary>
         private static void EnsureConsole()
         {
@@ -232,12 +201,15 @@ USAGE:
   Faster.exe --help                 Show this help and exit.
 
 NOTES:
-  --activate/--restore/--recapture-baseline (and the GUI) change a service's configuration
-  and request Administrator - relaunching itself with a UAC prompt if not already elevated.
+  --activate/--restore/--recapture-baseline change a service's configuration and request
+  Administrator - relaunching with a UAC prompt if not already elevated.
   --help/--list/--show/--delete/--baseline are read-only and never prompt for elevation.
-  Run from an already-elevated prompt if you want the elevating commands' output to appear
-  inline in that same terminal (a UAC relaunch spawns a separate process that can't reattach
-  to it).
+  The GUI always launches unelevated and elevates on demand from inside the window instead
+  (a toolbar ""Run as Admin"" button; Activate/Restore also offer to relaunch as admin first
+  if you're not already elevated).
+  Run from an already-elevated prompt if you want the elevating CLI commands' output to
+  appear inline in that same terminal (a UAC relaunch spawns a separate process that can't
+  reattach to it).
 
 EXAMPLES:
   Faster.exe --list
