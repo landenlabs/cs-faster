@@ -1,14 +1,59 @@
+<table border="0">
+  <tr>
+    <td>
+      <!-- VERSION -->v6.07.04<br>
+      <!-- DATE -->04-Jul-2026<br>
+      Windows<br>
+      <a href="https://landenlabs.com/index.html">Home</a>
+    </td>
+    <td>
+      <a href="https://landenlabs.com/index.html">
+        <img src="screens/landenlabs.webp" width="300" alt="Logo">
+      </a>
+    </td>
+  </tr>
+</table>
+
 # Faster
 
-<img src="icon.png" width="96" align="right" alt="Faster icon">
+**Faster** is a small Windows desktop utility for tuning system performance by switching
+between named **service profiles**: capture a baseline of every Windows service's
+configuration once, then build named lists that stop-and-disable or start-and-restore groups
+of services in one click (e.g. a "Gaming Mode" list disables indexing/telemetry services;
+activating it again later, or a "Restore" list, puts them back). Has both a GUI and a headless
+command-line mode.
 
-<!-- VERSION -->v6.07.01<br>
-<!-- DATE -->04-Jul-2026<br>
+---
 
-Save your Windows machine's current service configuration as a baseline, then build named
-lists that stop-and-disable or start-and-restore groups of services - a quick way to switch
-parts of Windows on or off to tune performance (e.g. "Gaming Mode" disables indexing/telemetry
-services; activating it again later, or a "Restore" list, puts them back).
+## Screenshots
+
+**Main window** — the service grid on the left (search/filter by name, category, start type,
+running state), a "Lists" tab of saved profiles on the right:
+
+![Main window - light theme](screens/main-light-1.png)
+
+The whole app supports a **light / dark theme** toggle (the half-black/half-white circle next
+to Help):
+
+![Main window - dark theme](screens/main-dark-1.png)
+
+Pressing **Metrics** adds PID/Memory/Handles/Threads/CPU %/Process columns sampled from every
+running service's host process. The Start Type column is color-coded too - a light green for
+plain **Automatic**, a deeper green for **Automatic (Delayed)** - so the two read apart at a
+glance:
+
+![Metrics columns and Start Type coloring - dark theme](screens/main-dark-2.png)
+
+**Details tab** - everything known about the selected service (WMI description, account,
+binary path, live resource usage), updating as the grid selection changes:
+
+![Details tab - dark theme](screens/detail-dark-1.png)
+
+**About tab** - version/build date and a shortcut to the settings folder:
+
+![About tab - dark theme](screens/about-dark-1.png)
+
+---
 
 ## Build & run
 
@@ -138,8 +183,20 @@ that doesn't even require Administrator.
   per-item exception isolation.
 - `CliRunner.cs` / `Program.cs` - headless command parsing and dispatch.
 - `MainForm.cs` / `NewListDialog.cs` / `ServiceDetailsPanel.cs` - the GUI. The right side of the
-  main window is a "Lists" / "Details" tab strip - "Details" shows the selected row's info as
-  formatted label/value tables and updates live as the grid selection changes.
+  main window is a "Lists" / "Details" / "About" tab strip - "Details" shows the selected row's
+  info as formatted label/value tables and updates live as the grid selection changes.
 - `ServiceCatalog.cs` - category/purpose lookup for well-known services.
 - `ServiceMetrics.cs` - on-demand PID/memory/handles/threads/CPU sampling (the Metrics button
   and the Details tab).
+- `Theme.cs` - the light/dark theme palette and toggle (see Screenshots above).
+
+---
+
+## License
+
+Licensed under the **Apache License, Version 2.0**. See [LICENSE](LICENSE) for the full text.
+
+## Author
+
+**Dennis Lang** — LanDen Labs (2026)
+<https://github.com/landenlabs/cs-faster>
