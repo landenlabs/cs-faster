@@ -10,7 +10,7 @@
     <AssemblyName>Faster</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>icon.ico</ApplicationIcon>
-    <Version>1.0.0</Version>
+    <Version>6.07.01</Version>
     <Copyright>LanDen Labs (2026)</Copyright>
     <!-- targeted runtime identifier for publishing a self-contained single-file exe -->
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>

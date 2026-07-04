@@ -2,7 +2,7 @@
 
 <img src="icon.png" width="96" align="right" alt="Faster icon">
 
-<!-- VERSION -->v1.0.0<br>
+<!-- VERSION -->v6.07.01<br>
 <!-- DATE -->04-Jul-2026<br>
 
 Save your Windows machine's current service configuration as a baseline, then build named
