@@ -81,7 +81,7 @@ namespace Faster
 
         /// <summary>
         /// Restores EVERY service in the baseline to its captured configuration - no saved list
-        /// needed. Builds a one-off, in-memory list (never written to lists.json) of
+        /// needed. Builds a one-off, in-memory list (never written to disk via ListStore) of
         /// RestoreToBaseline items and runs it through the same engine <c>--activate</c> uses.
         /// </summary>
         public static int RestoreBaseline()

@@ -11,9 +11,10 @@ namespace Faster
     /// Administrator-elevation helpers - mirrors cs-b4browse's Elevation.cs. The app ships with
     /// an <c>asInvoker</c> manifest, so the GUI runs unelevated by default and elevates only on
     /// demand (the toolbar's "Run as Admin" button, or being prompted the first time an admin
-    /// action - Activate/Restore - is attempted while unelevated). Only the CLI's mutating
-    /// commands (<c>--activate</c>/<c>--restore</c>/<c>--recapture-baseline</c>) still elevate
-    /// automatically, since there's no interactive button to offer there - see Program.cs.
+    /// action - Activate/Restore - is attempted while unelevated). The CLI's mutating commands
+    /// (<c>--activate</c>/<c>--restore</c>/<c>--recapture-baseline</c>) still elevate
+    /// automatically, since there's no interactive button to offer there, and the CLI's
+    /// <c>--admin</c> flag can force the same relaunch for any command - see Program.cs.
     /// </summary>
     public static class Elevation
     {

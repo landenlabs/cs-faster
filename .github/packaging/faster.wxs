@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Faster" Language="1033" Version="{VERSION}"
+           Manufacturer="LanDen Labs" UpgradeCode="{b9ee9586-d0f2-42f4-9cb6-616181360186}">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Faster is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFilesFolder">
+        <Directory Id="INSTALLFOLDER" Name="Faster" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="AppMenuFolder" Name="Faster" />
+      </Directory>
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="cmpExe" Guid="{ee03fc1a-146d-44ce-bf28-38c71a94fad4}">
+        <File Id="filExe" Source="{EXEDIR}\Faster.exe" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="AppMenuFolder">
+      <Component Id="cmpStartMenu" Guid="{be0c5b61-ede0-44a7-9f86-fa9c5c5bfa8d}">
+        <Shortcut Id="StartMenuShortcut" Name="Faster"
+                  Description="Faster - Windows Service Switcher by LanDen Labs"
+                  Target="[INSTALLFOLDER]Faster.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveAppMenuFolder" Directory="AppMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\LanDenLabs\Faster"
+                       Name="StartMenuInstalled" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="DefaultFeature" Level="1">
+      <ComponentRef Id="cmpExe" />
+      <ComponentRef Id="cmpStartMenu" />
+    </Feature>
+  </Product>
+</Wix>

@@ -9,6 +9,7 @@
     <RootNamespace>Faster</RootNamespace>
     <AssemblyName>Faster</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>icon.ico</ApplicationIcon>
     <Version>1.0.0</Version>
     <Copyright>LanDen Labs (2026)</Copyright>
     <!-- targeted runtime identifier for publishing a self-contained single-file exe -->
@@ -17,6 +18,32 @@
     <Product>Faster</Product>
     <Description>Save and switch between named Windows service configurations to tune system performance.</Description>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Stamp the build date into assembly metadata so AppInfo.BuildDate (read at runtime) is
+         always current. Date-only granularity means the generated attribute changes at most once
+         a day, so it doesn't force a recompile on every build. Mirrors cs-b4browse's csproj. -->
+    <AssemblyMetadata Include="BuildDate" Value="$([System.DateTime]::Now.ToString('dd-MMM-yyyy'))" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include=".github\workflows\publish.yml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Embedded so the window/taskbar icon (AppIcon.LoadIcon) and the About tab's image
+         (AppIcon.LoadImage) load from inside the single-file publish exe, not a loose file next
+         to it. Also copied to the output dir so debug runs from the build folder still find them
+         on disk (AppIcon's fallback path) without needing a publish first. icon.ico is ALSO
+         referenced by <ApplicationIcon> above - that sets the .exe's own Explorer/file-properties
+         icon (a Win32 resource baked in at link time), a separate mechanism from this embedding. -->
+    <EmbeddedResource Include="icon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </EmbeddedResource>
+    <EmbeddedResource Include="icon.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </EmbeddedResource>
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />

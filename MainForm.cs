@@ -22,16 +22,34 @@ namespace Faster
     public sealed class MainForm : Form
     {
         private readonly DataGridView _grid = new();
-        private readonly ListBox _listsBox = new();
+        // Overlaid on the "Use" column's header cell (DataGridView has no built-in header
+        // checkbox) - tri-state so it can show Indeterminate when only some of the currently
+        // VISIBLE rows are checked, not just a plain on/off toggle.
+        private readonly CheckBox _selectAllCheck = new() { ThreeState = true, CheckAlign = ContentAlignment.MiddleCenter };
+        // The "Saved lists" table: Modified date / # services / Name, sortable by header click
+        // like the main grid (see _listSortProperty/_listSortAscending below). Single-row-select
+        // stands in for the old ListBox's SelectedIndex.
+        private readonly DataGridView _listsGrid = new();
         private readonly Label _status = new();
         private readonly Label _baselineLabel = new();
         private readonly ContextMenuStrip _rowMenu = new();
         private readonly Button _metricsBtn = new();
+        private readonly Button _helpBtn = new();
+        private readonly Button _saveCheckedBtn = new();
+        private readonly Button _restoreAllBtn = new();
+        private readonly Button _activateBtn = new();
+        private readonly Button _updateListBtn = new();
+        private readonly Button _showDetailsBtn = new();
+        private readonly Button _deleteListBtn = new();
         private readonly ServiceDetailsPanel _detailsPanel = new(300);
+        private readonly AboutPanel _aboutPanel = new();
+
+        // Shared by every tooltip on the form (admin affordances, the select-all header
+        // checkbox, ...) - one ToolTip component can serve any number of controls.
+        private readonly ToolTip _tips = new();
 
         // ---- Elevation affordances (mirrors cs-b4browse's Elevation.cs + MainForm pattern) --- //
         private readonly Label _adminStatusLabel = new();
-        private readonly ToolTip _adminTip = new();
         private static readonly Color AdminAccent = Color.MediumPurple;
 
         // Metric columns are built once but only added to the grid on the first "Metrics" click -
@@ -50,10 +68,15 @@ namespace Faster
         private List<ServiceRow> _allRows = new();
         private BindingList<ServiceRow> _rows = new();
         private List<ServiceListDefinition> _lists = new();
+        private BindingList<ListRow> _listRows = new();
 
         // ---- Sorting (header click) ---------------------------------------------------- //
         private string _sortProperty = "DisplayName";
         private bool _sortAscending = true;
+        // Same header-click-to-sort convention as the main grid above, but a separate pair of
+        // fields since the two grids sort independently.
+        private string _listSortProperty = "Name";
+        private bool _listSortAscending = true;
 
         // ---- Filter bar (row above the grid) -------------------------------------------- //
         private const string AllChoice = "(All)";
@@ -114,15 +137,40 @@ namespace Faster
             };
         }
 
+        /// <summary>One row of the "Saved lists" table - a thin, sortable-column view over a
+        /// ServiceListDefinition. Definition is the source of truth for everything that isn't one
+        /// of the three displayed columns (Items, CreatedUtc, LastActivatedUtc, ...).</summary>
+        private sealed class ListRow
+        {
+            public required ServiceListDefinition Definition { get; init; }
+            public string Name => Definition.Name;
+            public int ServiceCount => Definition.Items.Count;
+            public DateTime ModifiedUtc => Definition.ModifiedUtc;
+            public string ModifiedText => ModifiedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+        }
+
         public MainForm()
         {
-            Text = "Faster - Windows Service Switcher";
-            Width = 1040;
+            // Version and build date come from AppInfo, which set-version.ps1 keeps in sync -
+            // same title-bar shape as cs-b4browse's MainForm.
+            Text = $"Faster - Windows Service Switcher - {AppInfo.Version} - LanDen Labs  {AppInfo.BuildDate}";
+            // Guarded rather than a direct `Icon = AppIcon.LoadIcon();` - Form.Icon's setter isn't
+            // guaranteed null-safe across WinForms versions, and a missing icon.ico shouldn't be
+            // fatal anyway; leaving Icon untouched just keeps the WinForms default.
+            if (AppIcon.LoadIcon() is Icon appIcon) Icon = appIcon;
+            // 1248 = 1040 * 1.2 - about 20% wider than the original default, so the grid's
+            // resource-metrics columns (added on demand by the "Metrics" button) have more room
+            // without immediately needing a manual resize.
+            Width = 1248;
             Height = 660;
             StartPosition = FormStartPosition.CenterScreen;
 
             BuildLayout();
             LoadData();
+            // Belt-and-suspenders: _grid.Resize (wired in BuildLayout) already repositions
+            // _selectAllCheck as the form lays out, but re-measuring once more after the whole
+            // form has actually shown catches any DPI/layout pass that settles after that.
+            Load += (_, _) => PositionSelectAllHeaderCheck();
         }
 
         private void BuildLayout()
@@ -139,7 +187,7 @@ namespace Faster
                 var adminBtn = new Button { Text = "Run as Admin", Left = x, Top = 8, Width = 110 };
                 adminBtn.ForeColor = AdminAccent;
                 adminBtn.Click += (_, _) => RelaunchAsAdmin();
-                _adminTip.SetToolTip(adminBtn,
+                _tips.SetToolTip(adminBtn,
                     "Relaunch Faster as Administrator - required to activate or restore a list.");
                 top.Controls.Add(adminBtn);
                 x = adminBtn.Right + 8;
@@ -169,11 +217,25 @@ namespace Faster
             top.Controls.Add(recaptureBtn);
             top.Controls.Add(_baselineLabel);
 
+            // "Help" sits at the toolbar's right edge rather than joining the left-to-right x
+            // cursor above - Anchor alone can't be trusted here because `top` isn't docked (and
+            // so isn't at its real width) yet at this point in the constructor, so its position
+            // is instead explicitly recomputed on every resize, mirroring the same idiom already
+            // used for _selectAllCheck/PositionSelectAllHeaderCheck.
+            _helpBtn.Text = "Help";
+            _helpBtn.Top = 8;
+            _helpBtn.Width = 70;
+            _helpBtn.Click += (_, _) => new HelpDialog().ShowDialog(this);
+            _tips.SetToolTip(_helpBtn, "Feature tour and links (similar to README.md).");
+            top.Controls.Add(_helpBtn);
+            top.Resize += (_, _) => PositionHelpButton(top);
+            PositionHelpButton(top);
+
             // SplitterDistance is set once the form has its real size (Load, below) rather than
             // here: its setter validates against the control's CURRENT width, which at this point
             // (unparented, default-sized) is far smaller than 680 and would throw.
-            var split = new SplitContainer { Dock = DockStyle.Fill, Width = 1040, Height = 600 };
-            split.SplitterDistance = 680;   // Width is fixed above, so this is now in-range
+            var split = new SplitContainer { Dock = DockStyle.Fill, Width = 1248, Height = 600 };
+            split.SplitterDistance = 749;   // 60% of 1248 - grid (left) is the more important panel
             // FixedPanel defaults to None, which keeps SplitterDistance as a PERCENTAGE of the
             // container on resize (both panels grow/shrink proportionally). Panel2 (the saved-
             // lists side) should instead stay a constant pixel width and let Panel1 (the grid)
@@ -186,12 +248,25 @@ namespace Faster
             _grid.AutoGenerateColumns = false;
             _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             _grid.RowHeadersVisible = false;
+            // Blank HeaderText: the overlaid _selectAllCheck (added below, once the grid has a
+            // Handle to measure against) makes the column's purpose self-explanatory without a
+            // label competing for space in a 40px-wide header cell.
             _grid.Columns.Add(new DataGridViewCheckBoxColumn
-                { DataPropertyName = "Selected", HeaderText = "Use", Width = 40 });
+                { DataPropertyName = "Selected", HeaderText = "", Width = 40 });
             _grid.Columns.Add(new DataGridViewTextBoxColumn
                 { DataPropertyName = "ServiceName", HeaderText = "Service", Width = 190, ReadOnly = true });
             _grid.Columns.Add(new DataGridViewTextBoxColumn
-                { DataPropertyName = "DisplayName", HeaderText = "Display Name", Width = 200, ReadOnly = true });
+            {
+                DataPropertyName = "DisplayName", HeaderText = "Display Name", Width = 200, ReadOnly = true,
+                // Fill mode is independent of the grid-level AutoSizeColumnsMode (which stays at
+                // its default None, so every other column keeps its explicit Width and remains
+                // manually resizable) - this is the one column that soaks up any extra horizontal
+                // room once the left (grid) panel grows wider than the columns' combined default
+                // widths, e.g. when the user widens the main window or drags the splitter right,
+                // rather than leaving blank grey space past the last column.
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+                MinimumWidth = 150,
+            });
             _grid.Columns.Add(new DataGridViewTextBoxColumn
                 { DataPropertyName = "CategoryLabel", HeaderText = "Category", Width = 90, ReadOnly = true });
             _grid.Columns.Add(new DataGridViewTextBoxColumn
@@ -224,34 +299,107 @@ namespace Faster
             // arrow keys) is reflected there immediately, replacing the old right-click "Details"
             // popup.
             _grid.SelectionChanged += (_, _) => UpdateDetailsPanel();
+            // Keeps the "Save Checked (n)..." button's label and the select-all header checkbox
+            // (below) live as checkboxes are toggled - CellValueChanged fires once CommitEdit
+            // (above) has pushed the new value into the bound ServiceRow.Selected.
+            _grid.CellValueChanged += (_, _) =>
+            {
+                UpdateSaveCheckedButtonText();
+                UpdateSelectAllHeaderCheckState();
+            };
+
+            // Select-all header checkbox: overlaid directly on the "Use" column's header cell
+            // (DataGridView has no built-in one) rather than drawn into the header itself, so it
+            // can be a real, clickable, tri-state CheckBox with no owner-draw. Operates on _rows
+            // (the currently VISIBLE/filtered rows), not _allRows - a service hidden by a filter
+            // is left exactly as it was, matching "only for the visible items."
+            _selectAllCheck.Click += (_, _) => ToggleSelectAllVisible();
+            _tips.SetToolTip(_selectAllCheck, "Check/uncheck all visible services");
+            _grid.Controls.Add(_selectAllCheck);
+            // The header cell's position/size (and whether it's even scrolled into view) can only
+            // be measured once the grid has columns and a Handle - both already true here - and
+            // changes whenever the grid resizes or a column is resized, so re-measure on those too.
+            _grid.Resize += (_, _) => PositionSelectAllHeaderCheck();
+            _grid.ColumnWidthChanged += (_, _) => PositionSelectAllHeaderCheck();
+            PositionSelectAllHeaderCheck();
+
             split.Panel1.Controls.Add(_grid);
             split.Panel1.Controls.Add(BuildFilterBar());
 
             var right = new Panel { Dock = DockStyle.Fill };
             var listsLabel = new Label { Text = "Saved lists", Dock = DockStyle.Top, Height = 20, Padding = new Padding(4, 4, 0, 0) };
-            _listsBox.Dock = DockStyle.Fill;
-            // Selecting a saved list checks exactly its services in the grid (and unchecks
-            // everything else), so "Activate Selected List" and "what's in this list" are
-            // visually the same thing - also fires (harmlessly) with SelectedIndex=-1 whenever
-            // LoadData() repopulates _listsBox.Items, which ApplyListSelectionToChecks ignores.
-            _listsBox.SelectedIndexChanged += (_, _) => ApplyListSelectionToChecks();
+
+            _listsGrid.Dock = DockStyle.Fill;
+            _listsGrid.AllowUserToAddRows = false;
+            _listsGrid.AllowUserToDeleteRows = false;
+            _listsGrid.AllowUserToResizeRows = false;
+            _listsGrid.AutoGenerateColumns = false;
+            _listsGrid.ReadOnly = true;
+            _listsGrid.MultiSelect = false;
+            _listsGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            _listsGrid.RowHeadersVisible = false;
+            _listsGrid.Columns.Add(new DataGridViewTextBoxColumn
+                { DataPropertyName = "ModifiedText", HeaderText = "Modified", Width = 120 });
+            _listsGrid.Columns.Add(new DataGridViewTextBoxColumn
+                { DataPropertyName = "ServiceCount", HeaderText = "# Services", Width = 80 });
+            _listsGrid.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                DataPropertyName = "Name", HeaderText = "Name",
+                // Same "one column soaks up extra room" idiom as the main grid's Display Name
+                // column - Modified/# Services keep their fixed Width and stay manually resizable.
+                AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
+                MinimumWidth = 120,
+            });
+            foreach (DataGridViewColumn col in _listsGrid.Columns)
+                col.SortMode = DataGridViewColumnSortMode.Programmatic;
+            _listsGrid.ColumnHeaderMouseClick += ListsGrid_ColumnHeaderMouseClick;
+            // Selecting a row still checks exactly that list's services in the grid (and unchecks
+            // everything else), so "Activate '<name>'" and "what's in this list" are visually the
+            // same thing - same behavior the old ListBox had.
+            _listsGrid.SelectionChanged += (_, _) => OnListsGridSelectionChanged();
+            // Esc clears the selection entirely (standard "back out of this" convention, same as
+            // most Windows list/grid views) - deliberately does NOT touch the grid's checkboxes;
+            // those stay exactly as they were, since selecting/deselecting a list is orthogonal to
+            // what's currently checked (see ApplyListSelectionToChecks' no-op guard for a null list).
+            _listsGrid.KeyDown += (_, e) =>
+            {
+                if (e.KeyCode != Keys.Escape || _listsGrid.CurrentRow == null) return;
+                _listsGrid.ClearSelection();
+                _listsGrid.CurrentCell = null;
+                e.Handled = true;
+            };
+
             var btnPanel = new FlowLayoutPanel
-                { Dock = DockStyle.Bottom, Height = 190, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(4) };
-            var newBtn = new Button { Text = "New List From Checked...", Width = 220 };
-            newBtn.Click += (_, _) => CreateListFromChecked();
-            var activateBtn = new Button { Text = "Activate Selected List", Width = 220 };
-            activateBtn.Click += (_, _) => ActivateSelectedList();
-            var restoreAllBtn = new Button { Text = "Restore All to Baseline", Width = 220 };
-            restoreAllBtn.Click += (_, _) => RestoreAllToBaseline();
-            var showBtn = new Button { Text = "Show Details", Width = 220 };
-            showBtn.Click += (_, _) => ShowSelectedListDetails();
-            var deleteBtn = new Button { Text = "Delete Selected List", Width = 220 };
-            deleteBtn.Click += (_, _) => DeleteSelectedList();
-            btnPanel.Controls.Add(newBtn);
-            btnPanel.Controls.Add(activateBtn);
-            btnPanel.Controls.Add(restoreAllBtn);
-            btnPanel.Controls.Add(showBtn);
-            btnPanel.Controls.Add(deleteBtn);
+                { Dock = DockStyle.Bottom, Height = 226, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(4) };
+            _saveCheckedBtn.Text = "Save 0 checked service(s) as...";
+            _saveCheckedBtn.Width = 220;
+            _saveCheckedBtn.Click += (_, _) => CreateListFromChecked();
+            _restoreAllBtn.Text = "Restore All to Baseline";
+            _restoreAllBtn.Width = 220;
+            _restoreAllBtn.Click += (_, _) => RestoreAllToBaseline();
+            _activateBtn.Width = 220;
+            _activateBtn.Click += (_, _) => ActivateSelectedList();
+            _updateListBtn.Width = 220;
+            _updateListBtn.Click += (_, _) => UpdateSelectedList();
+            _showDetailsBtn.Width = 220;
+            _showDetailsBtn.Click += (_, _) => ShowSelectedListDetails();
+            _deleteListBtn.Width = 220;
+            _deleteListBtn.Click += (_, _) => DeleteSelectedList();
+            // "Save Checked..." and "Restore All" are both global - neither needs a list selected,
+            // unlike the four list-scoped actions below them, each of which names its target
+            // directly in its own label (see UpdateListActionButtons) rather than a generic
+            // "Selected List" so it's never ambiguous which list a click affects. Save Checked is
+            // first since it's the workflow's starting point (check services, then save them).
+            btnPanel.Controls.Add(_saveCheckedBtn);
+            btnPanel.Controls.Add(_restoreAllBtn);
+            btnPanel.Controls.Add(_activateBtn);
+            btnPanel.Controls.Add(_updateListBtn);
+            btnPanel.Controls.Add(_showDetailsBtn);
+            btnPanel.Controls.Add(_deleteListBtn);
+            // Activate/Update/Show/Delete all act on "the selected list" - start disabled and stay
+            // that way until a real list is selected; see UpdateListActionButtons, called from
+            // OnListsGridSelectionChanged and LoadData.
+            UpdateListActionButtons();
 
             // Purple dot call-out on the two buttons that touch live service state - both need
             // Administrator, so both prompt to relaunch elevated (see TryElevateForAction) the
@@ -262,24 +410,28 @@ namespace Faster
             // settled until the parent actually lays out.
             if (!Elevation.IsAdmin)
             {
-                AddAdminDot(activateBtn);
-                AddAdminDot(restoreAllBtn);
+                AddAdminDot(_activateBtn);
+                AddAdminDot(_restoreAllBtn);
             }
 
-            right.Controls.Add(_listsBox);
+            right.Controls.Add(_listsGrid);
             right.Controls.Add(listsLabel);
             right.Controls.Add(btnPanel);
 
             // Right side is now a tab strip: "Lists" is exactly what used to be the whole right
             // panel; "Details" is what used to be the right-click "Details..." popup, now living
-            // inline and updating as the grid selection changes (see _grid.SelectionChanged above).
+            // inline and updating as the grid selection changes (see _grid.SelectionChanged above);
+            // "About" is app name/version/legal text plus a shortcut to the settings folder.
             var rightTabs = new TabControl { Dock = DockStyle.Fill };
             var listsTab = new TabPage("Lists");
             listsTab.Controls.Add(right);
             var detailsTab = new TabPage("Details");
             detailsTab.Controls.Add(_detailsPanel);
+            var aboutTab = new TabPage("About");
+            aboutTab.Controls.Add(_aboutPanel);
             rightTabs.TabPages.Add(listsTab);
             rightTabs.TabPages.Add(detailsTab);
+            rightTabs.TabPages.Add(aboutTab);
             split.Panel2.Controls.Add(rightTabs);
 
             // Bottom bar: an elevation indicator (left, fixed width, click-to-elevate) + the
@@ -314,7 +466,7 @@ namespace Faster
             _adminStatusLabel.Text = admin ? "Administrator" : "Standard user";
             _adminStatusLabel.ForeColor = admin ? Color.FromArgb(0, 90, 200) : AdminAccent;
             _adminStatusLabel.Cursor = admin ? Cursors.Default : Cursors.Hand;
-            _adminTip.SetToolTip(_adminStatusLabel, admin
+            _tips.SetToolTip(_adminStatusLabel, admin
                 ? "Running as Administrator."
                 : "Running as a standard user. Click to relaunch as Administrator.");
         }
@@ -352,8 +504,8 @@ namespace Faster
             return false;
         }
 
-        /// <summary>Draws a small purple dot over a button's top-right corner via its own Paint
-        /// event - avoids needing to know the button's absolute position inside a
+        /// <summary>Draws a small purple dot over a button's left edge, vertically centered, via
+        /// its own Paint event - avoids needing to know the button's absolute position inside a
         /// FlowLayoutPanel, which isn't settled until the parent actually lays out.</summary>
         private static void AddAdminDot(Button btn)
         {
@@ -361,7 +513,7 @@ namespace Faster
             {
                 const int d = 8;
                 using var brush = new SolidBrush(AdminAccent);
-                e.Graphics.FillEllipse(brush, btn.Width - d - 5, 4, d, d);
+                e.Graphics.FillEllipse(brush, 5, (btn.Height - d) / 2, d, d);
             };
         }
 
@@ -511,7 +663,65 @@ namespace Faster
                 _filterCountLabel.Text = filtered.Count == _allRows.Count
                     ? $"{_allRows.Count} shown"
                     : $"showing {filtered.Count} of {_allRows.Count}";
+
+            UpdateSelectAllHeaderCheckState();   // the visible set just changed - re-derive Checked/Indeterminate
         }
+
+        /// <summary>Checks or unchecks every currently VISIBLE row (_rows, not _allRows) in one
+        /// click - a service hidden by an active filter is left exactly as it was. If the visible
+        /// rows aren't all checked already (none, or a mixed Indeterminate state), this checks all
+        /// of them; if they're all already checked, it unchecks all of them - the same "click
+        /// selects all, click again clears all" rule most select-all header checkboxes use.</summary>
+        private void ToggleSelectAllVisible()
+        {
+            bool allChecked = _rows.Count > 0 && _rows.All(r => r.Selected);
+            bool newState = !allChecked;
+            foreach (var row in _rows) row.Selected = newState;
+
+            // ServiceRow doesn't implement INotifyPropertyChanged (see ApplyListSelectionToChecks'
+            // comment) - ResetBindings forces the grid's checkbox cells to notice.
+            _rows.ResetBindings();
+            UpdateSaveCheckedButtonText();
+            UpdateSelectAllHeaderCheckState();
+        }
+
+        /// <summary>Sets _selectAllCheck to Checked/Unchecked/Indeterminate based on how many of
+        /// the currently visible rows (_rows) are checked - called after anything that can change
+        /// either which rows are visible or which are checked.</summary>
+        private void UpdateSelectAllHeaderCheckState()
+        {
+            if (_rows.Count == 0) { _selectAllCheck.CheckState = CheckState.Unchecked; return; }
+            int n = _rows.Count(r => r.Selected);
+            _selectAllCheck.CheckState = n == 0 ? CheckState.Unchecked
+                : n == _rows.Count ? CheckState.Checked
+                : CheckState.Indeterminate;
+        }
+
+        /// <summary>Re-measures and repositions _selectAllCheck over the "Use" column's header
+        /// cell - called after the grid resizes or any column is resized, since the header cell's
+        /// on-screen rectangle (and whether it's scrolled out of view at all) can shift either
+        /// way. GetCellDisplayRectangle(0, -1, ...) is the header row (-1) of column 0 (the
+        /// checkbox column), already accounting for horizontal scroll.</summary>
+        private void PositionSelectAllHeaderCheck()
+        {
+            if (_grid.Columns.Count == 0) return;
+            Rectangle headerRect = _grid.GetCellDisplayRectangle(0, -1, true);
+            if (headerRect.IsEmpty) { _selectAllCheck.Visible = false; return; }
+
+            _selectAllCheck.Visible = true;
+            const int size = 16;
+            _selectAllCheck.SetBounds(
+                headerRect.Left + (headerRect.Width - size) / 2,
+                headerRect.Top + (headerRect.Height - size) / 2,
+                size, size);
+        }
+
+        /// <summary>Keeps _helpBtn pinned to the toolbar's right edge - called once at layout time
+        /// and again on every resize of the toolbar Panel, since (unlike the rest of the toolbar's
+        /// left-to-right buttons) its position depends on the panel's current width rather than
+        /// the previous button's right edge.</summary>
+        private void PositionHelpButton(Panel top) =>
+            _helpBtn.Left = Math.Max(top.ClientSize.Width - _helpBtn.Width - 8, 0);
 
         /// <summary>Sorts in place by the current header-click column, falling back to a string
         /// comparison if the two keys' runtime types can't be compared directly (defensive only -
@@ -567,6 +777,72 @@ namespace Faster
                 if (col.DataPropertyName != _sortProperty) continue;
                 col.HeaderCell.SortGlyphDirection = _sortAscending ? SortOrder.Ascending : SortOrder.Descending;
                 break;
+            }
+        }
+
+        // ---- "Saved lists" table sorting - same click-to-sort convention as the main grid above,
+        // just against ListRow/_lists instead of ServiceRow/_allRows. -------------------------- //
+
+        private void ListsGrid_ColumnHeaderMouseClick(object? sender, DataGridViewCellMouseEventArgs e)
+        {
+            if (e.ColumnIndex < 0 || e.ColumnIndex >= _listsGrid.Columns.Count) return;
+            string? prop = _listsGrid.Columns[e.ColumnIndex].DataPropertyName;
+            if (string.IsNullOrEmpty(prop)) return;
+
+            if (_listSortProperty == prop) _listSortAscending = !_listSortAscending;
+            else { _listSortProperty = prop; _listSortAscending = true; }
+            RebuildListRows();
+        }
+
+        private void UpdateListSortGlyphs()
+        {
+            foreach (DataGridViewColumn col in _listsGrid.Columns)
+                col.HeaderCell.SortGlyphDirection = SortOrder.None;
+            foreach (DataGridViewColumn col in _listsGrid.Columns)
+            {
+                if (col.DataPropertyName != _listSortProperty) continue;
+                col.HeaderCell.SortGlyphDirection = _listSortAscending ? SortOrder.Ascending : SortOrder.Descending;
+                break;
+            }
+        }
+
+        private static IComparable ListSortKey(ListRow r, string property) => property switch
+        {
+            "ModifiedText" => r.ModifiedUtc,
+            "ServiceCount" => r.ServiceCount,
+            "Name" => r.Name,
+            _ => r.Name,
+        };
+
+        /// <summary>Rebuilds _listRows from _lists (sorted per _listSortProperty/_listSortAscending)
+        /// and rebinds _listsGrid - the "Saved lists" table's equivalent of ApplyFilterAndSort,
+        /// minus any filtering (there's no filter bar on this side). Called after LoadData and
+        /// after every header-click sort change.</summary>
+        private void RebuildListRows()
+        {
+            var sorted = _lists.Select(l => new ListRow { Definition = l }).ToList();
+            sorted.Sort((a, b) =>
+            {
+                IComparable ka = ListSortKey(a, _listSortProperty);
+                IComparable kb = ListSortKey(b, _listSortProperty);
+                int cmp;
+                try { cmp = Comparer<IComparable>.Default.Compare(ka, kb); }
+                catch { cmp = string.Compare(ka?.ToString(), kb?.ToString(), StringComparison.OrdinalIgnoreCase); }
+                return _listSortAscending ? cmp : -cmp;
+            });
+
+            // Preserve the current selection across the rebind (by list name) rather than always
+            // resetting to none - a header-click sort shouldn't feel like deselecting.
+            string? selectedName = SelectedListOrNull()?.Name;
+
+            _listRows = new BindingList<ListRow>(sorted);
+            _listsGrid.DataSource = _listRows;
+            UpdateListSortGlyphs();
+
+            if (selectedName != null)
+            {
+                int idx = sorted.FindIndex(r => r.Name == selectedName);
+                if (idx >= 0) _listsGrid.Rows[idx].Selected = true;
             }
         }
 
@@ -745,6 +1021,47 @@ namespace Faster
                 row.StartTypeText, row.RunningText, row.BaselineText);
         }
 
+        /// <summary>Refreshes the "Save n checked service(s) as..." shortcut row's count from
+        /// _allRows - the source of truth for which services are checked (see the field comment
+        /// above). Called after anything that can change a row's Selected flag: a grid checkbox
+        /// toggle (_grid.CellValueChanged), selecting a saved list (ApplyListSelectionToChecks),
+        /// and every LoadData (which rebuilds _allRows from scratch, clearing all checks).</summary>
+        private void UpdateSaveCheckedButtonText()
+        {
+            int n = _allRows.Count(r => r.Selected);
+            _saveCheckedBtn.Text = $"Save {n} checked service(s) as...";
+        }
+
+        /// <summary>Fires on every _listsGrid selection change. Checks exactly the selected list's
+        /// services (ApplyListSelectionToChecks) and refreshes the Update/Activate/Show/Delete
+        /// buttons; a cleared selection (Esc, or the rebind that runs during LoadData) is a no-op
+        /// for the checks, but still greys the four list-scoped buttons back out.</summary>
+        private void OnListsGridSelectionChanged()
+        {
+            ApplyListSelectionToChecks();
+            UpdateListActionButtons();
+        }
+
+        /// <summary>Enables Update/Activate/Show Details/Delete only once a real saved list row is
+        /// selected - clicking any of them with nothing selected is no longer possible, replacing
+        /// the old "select a list first" MessageBox fallback in SelectedList(). Also sets each
+        /// button's label to name the list it would act on.</summary>
+        private void UpdateListActionButtons()
+        {
+            var list = SelectedListOrNull();
+            bool hasList = list != null;
+            string name = list?.Name ?? "";
+
+            _activateBtn.Enabled = hasList;
+            _activateBtn.Text = hasList ? $"Activate '{name}'" : "Activate...";
+            _updateListBtn.Enabled = hasList;
+            _updateListBtn.Text = hasList ? $"Update '{name}'" : "Update...";
+            _showDetailsBtn.Enabled = hasList;
+            _showDetailsBtn.Text = hasList ? $"Details of '{name}'" : "Details...";
+            _deleteListBtn.Enabled = hasList;
+            _deleteListBtn.Text = hasList ? $"Delete '{name}'" : "Delete...";
+        }
+
         private void LoadData()
         {
             _status.Text = "Loading services ...";
@@ -777,12 +1094,9 @@ namespace Faster
                 ApplyFilterAndSort();   // builds _rows/_grid.DataSource from _allRows
 
                 _lists = ListStore.LoadAll().OrderBy(l => l.Name, StringComparer.OrdinalIgnoreCase).ToList();
-                _listsBox.Items.Clear();
-                foreach (var l in _lists)
-                {
-                    string lastRun = l.LastActivatedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "never run";
-                    _listsBox.Items.Add($"{l.Name}  -  {l.Items.Count} service(s), {lastRun}");
-                }
+                RebuildListRows();          // builds _listRows/_listsGrid.DataSource from _lists
+                UpdateSaveCheckedButtonText();   // fresh _allRows means every check was just cleared
+                UpdateListActionButtons();       // selection reset to none by the rebind above
 
                 _status.Text = $"{_allRows.Count} service(s), {_lists.Count} saved list(s).";
             }
@@ -925,30 +1239,61 @@ namespace Faster
             {
                 Name = dlg.ListName,
                 CreatedUtc = DateTime.UtcNow,
-                Items = selectedRows.Select(r => new ServiceListItem
-                {
-                    ServiceName = r.ServiceName,
-                    DisplayName = r.DisplayName,
-                    Action = dlg.Action,
-                    TargetStartType = dlg.TargetStartType,
-                    TargetDelayedAutoStart = dlg.TargetDelayedAutoStart,
-                }).ToList(),
+                Items = dlg.Items,   // per-row actions, set (individually or via "Apply to All") in the dialog
+                // ModifiedUtc isn't set here - ListStore.Upsert/LoadAll derive it from the backing
+                // file's own last-write time instead (see ServiceListDefinition.ModifiedUtc).
             };
 
             ListStore.Upsert(list);
             LoadData();
         }
 
+        /// <summary>Re-saves the selected list's contents from the currently checked services,
+        /// overwriting it directly - no name to type, no "replace this list?" prompt, since
+        /// Update already names an unambiguous target (unlike CreateListFromChecked, which can
+        /// still collide with a typed name). This is the fix for lists being awkward to edit:
+        /// select the list (which already checks exactly its services - see
+        /// ApplyListSelectionToChecks), tick/untick services as needed, then Update.</summary>
+        private void UpdateSelectedList()
+        {
+            var list = SelectedList();
+            if (list == null) return;
+
+            var checkedRows = _allRows.Where(r => r.Selected).ToList();
+            if (checkedRows.Count == 0)
+            {
+                MessageBox.Show(this, "Check one or more services in the grid first.", "Faster",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using var dlg = new NewListDialog(
+                checkedRows.Select(r => (r.ServiceName, r.DisplayName)).ToList(),
+                existingName: list.Name,
+                existingItems: list.Items);
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+            ListStore.Upsert(new ServiceListDefinition
+            {
+                Name = list.Name,
+                CreatedUtc = list.CreatedUtc,
+                LastActivatedUtc = list.LastActivatedUtc,
+                Items = dlg.Items,
+                // ModifiedUtc isn't set here either - see CreateListFromChecked's comment above.
+            });
+            LoadData();
+        }
+
         /// <summary>Checks exactly the services belonging to the newly-selected saved list in the
         /// grid (unchecking everything else) - silent no-op when nothing is selected (e.g. the
-        /// -1 SelectedIndex that fires while LoadData() is repopulating _listsBox.Items), unlike
-        /// SelectedList() below which is used by explicit button clicks and prompts instead.</summary>
+        /// selection-cleared event that fires while LoadData()/RebuildListRows() is rebinding
+        /// _listsGrid), unlike SelectedList() below which is used by explicit button clicks and
+        /// prompts instead.</summary>
         private void ApplyListSelectionToChecks()
         {
-            int i = _listsBox.SelectedIndex;
-            if (i < 0 || i >= _lists.Count) return;
+            var list = SelectedListOrNull();
+            if (list == null) return;
 
-            var list = _lists[i];
             var namesInList = new HashSet<string>(
                 list.Items.Select(item => item.ServiceName), StringComparer.OrdinalIgnoreCase);
 
@@ -960,19 +1305,33 @@ namespace Faster
             // re-read, same idea as ApplyFilterAndSort's full rebind but without reshuffling sort/
             // filter state.
             _rows.ResetBindings();
+            UpdateSaveCheckedButtonText();
+            UpdateSelectAllHeaderCheckState();
             _status.Text = $"Checked {namesInList.Count} service(s) from '{list.Name}'.";
         }
 
+        /// <summary>The real saved list backing the current _listsGrid selection, or null if
+        /// nothing is selected - a silent, non-prompting lookup used internally (sort/selection
+        /// bookkeeping, button enable-state) where "nothing selected" is an expected, normal
+        /// state rather than a user mistake. See SelectedList() below for the prompting variant
+        /// explicit button clicks use.</summary>
+        private ServiceListDefinition? SelectedListOrNull() =>
+            (_listsGrid.CurrentRow?.DataBoundItem as ListRow)?.Definition;
+
+        /// <summary>The real saved list backing the current _listsGrid selection, or null if
+        /// nothing is selected. Callers no longer need to guard against this in practice -
+        /// Update/Activate/Show Details/Delete are all disabled by UpdateListActionButtons
+        /// whenever this would return null - but the MessageBox fallback stays as a defensive
+        /// no-op for any other caller.</summary>
         private ServiceListDefinition? SelectedList()
         {
-            int i = _listsBox.SelectedIndex;
-            if (i < 0 || i >= _lists.Count)
+            var list = SelectedListOrNull();
+            if (list == null)
             {
                 MessageBox.Show(this, "Select a saved list first.", "Faster",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return null;
             }
-            return _lists[i];
+            return list;
         }
 
         private void ActivateSelectedList()
@@ -1017,7 +1376,7 @@ namespace Faster
 
         /// <summary>Restores EVERY service in the baseline to its captured configuration - the
         /// GUI equivalent of the headless <c>--restore</c> command. Builds a one-off, in-memory
-        /// list (never saved to lists.json) rather than requiring the user to first create a
+        /// list (never saved via ListStore) rather than requiring the user to first create a
         /// list with a RestoreToBaseline item for every single service.</summary>
         private void RestoreAllToBaseline()
         {
@@ -1076,25 +1435,23 @@ namespace Faster
             }
         }
 
+        /// <summary>Shows the selected list's per-service actions - reuses NewListDialog's grid in
+        /// read-only mode instead of the old plain-text MessageBox dump, so a mixed list (some
+        /// services Stop, others Start or Restore) reads as a table instead of a wall of text.</summary>
         private void ShowSelectedListDetails()
         {
             var list = SelectedList();
             if (list == null) return;
 
-            var sb = new StringBuilder();
-            sb.AppendLine($"Created:        {list.CreatedUtc.ToLocalTime():yyyy-MM-dd HH:mm}");
-            sb.AppendLine($"Last activated: {(list.LastActivatedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "(never)")}");
-            sb.AppendLine();
-            foreach (var item in list.Items)
-            {
-                string detail = item.Action == ServiceTargetAction.RestoreToBaseline
-                    ? "restore to baseline"
-                    : $"{item.Action} -> {item.TargetStartType}" +
-                      (item.TargetStartType == ServiceStartMode.Automatic && item.TargetDelayedAutoStart ? " (Delayed)" : "");
-                sb.AppendLine($"{item.DisplayName} ({item.ServiceName}): {detail}");
-            }
-
-            MessageBox.Show(this, sb.ToString(), list.Name, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            using var dlg = new NewListDialog(
+                list.Items.Select(item => (item.ServiceName, item.DisplayName)).ToList(),
+                existingName: list.Name,
+                existingItems: list.Items,
+                readOnly: true,
+                createdUtc: list.CreatedUtc,
+                lastActivatedUtc: list.LastActivatedUtc,
+                modifiedUtc: list.ModifiedUtc);
+            dlg.ShowDialog(this);
         }
 
         private void DeleteSelectedList()

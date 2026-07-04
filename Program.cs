@@ -21,14 +21,20 @@ namespace Faster
     ///             Faster.exe --delete &lt;name&gt;            Delete a saved list.
     ///             Faster.exe --baseline                 Show (capturing if missing) the baseline.
     ///             Faster.exe --recapture-baseline        Force a fresh baseline capture.
+    ///             Faster.exe --admin                     Force the UAC elevation prompt (see below).
     ///             Faster.exe --help                      Show usage and exit.
     ///
     /// --activate/--restore/--recapture-baseline change a service's configuration and need
     /// Administrator, so Main checks elevation for those and, if not elevated, relaunches with a
     /// UAC prompt (rather than declaring requireAdministrator in app.manifest, which hit a
     /// side-by-side activation error on some SDKs - see app.manifest's comment).
-    /// --help/--list/--show/--delete/--baseline are read-only and never elevate, so they always
-    /// print straight to the calling console with no UAC prompt in the way.
+    /// --help/--list/--show/--delete/--baseline are read-only and never elevate on their own, so
+    /// they always print straight to the calling console with no UAC prompt in the way.
+    /// --admin can be added alongside any command (e.g. from a batch file) to force that UAC
+    /// prompt/relaunch regardless of which command follows - a no-op if already elevated. Mainly
+    /// useful for making a script's intent to elevate explicit rather than relying on which
+    /// specific command happens to auto-elevate, or for forcing elevation on an otherwise
+    /// read-only command. See the elevation gate near the top of Main for how it's wired in.
     ///
     /// The GUI itself launches unelevated (asInvoker) regardless of the current process's rights
     /// - it has its own on-demand affordances (a toolbar "Run as Admin" button, a bottom-bar
@@ -65,8 +71,33 @@ namespace Faster
                 return (i >= 0 && i + 1 < args.Length) ? args[i + 1] : null;
             }
 
+            // ---- --admin: forces the UAC elevation prompt/relaunch up front, before ANY command
+            // (read-only or mutating) runs, regardless of which command follows it - unlike the
+            // isMutatingCommand check further down, which only elevates for the three commands
+            // that specifically need it. Exists for batch/script use: --activate/--restore/
+            // --recapture-baseline already auto-elevate on their own, so --admin's value there is
+            // just making the script's intent explicit, but it also lets an otherwise read-only
+            // command (e.g. --show) be forced to run elevated. No-op if already elevated - nothing
+            // to relaunch. Deliberately placed after EnsureConsole() (so this instance is still
+            // attached to the caller's console for as long as it's actually running) but before
+            // the read-only dispatch below, since forceAdmin can accompany a read-only command
+            // too. A forced relaunch here hits the same "new process can't reattach to the
+            // caller's console" limitation as the mutating commands' own elevation check below -
+            // run from an already-elevated prompt if you need to see that command's output inline.
+            if (args.Any(a => a.Equals("--admin", StringComparison.OrdinalIgnoreCase)) && !Elevation.IsAdmin)
+            {
+                if (!Elevation.RelaunchAsAdmin())
+                {
+                    ShowElevationMessage("Administrator privileges were requested (--admin), " +
+                        "and the elevation prompt was cancelled or failed.");
+                }
+                return;   // either a new elevated process is taking over, or the user cancelled/it
+                          // failed and a message was already shown - this process is done either way.
+            }
+
             // ---- Read-only commands: just inspect saved files / live service config, never
-            // change anything, so they run immediately with no elevation check at all. ---- //
+            // change anything, so they run immediately with no elevation check at all (unless
+            // --admin forced one above). ---- //
             try
             {
                 string? name;
@@ -123,16 +154,23 @@ namespace Faster
             // Anything left over here means the user passed something we didn't recognize (a
             // mistyped flag, e.g.) - fail loudly with a non-zero exit code instead of silently
             // launching the GUI, which would otherwise sit there unattended in a batch/CI run.
-            if (args.Length > 1)
+            // --admin is excluded from this check: it's a modifier, not a command on its own, and
+            // by this point it's already done its job (either this process is already elevated,
+            // or the gate above already relaunched/returned) - "Faster.exe --admin" with nothing
+            // else is a legitimate way to launch the GUI pre-elevated, not an error.
+            var leftover = args.Skip(1)
+                .Where(a => !a.Equals("--admin", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (leftover.Count > 0)
             {
-                Console.Error.WriteLine($"Unrecognized argument(s): {string.Join(" ", args.Skip(1))}");
+                Console.Error.WriteLine($"Unrecognized argument(s): {string.Join(" ", leftover)}");
                 Console.Error.WriteLine("Run 'Faster.exe --help' for usage.");
                 Environment.Exit(2);
                 return;
             }
 
-            // No arguments at all - launch the GUI, unelevated or not (see Elevation.cs/MainForm
-            // for how it elevates on demand from inside the window instead). Capture the baseline
+            // No arguments left (aside from a possible --admin, already handled above) - launch
+            // the GUI, unelevated unless --admin forced it above (see Elevation.cs/MainForm for
+            // how it elevates on demand from inside the window otherwise). Capture the baseline
             // on first run before the window shows, so the "current config" grid has something
             // to compare against.
             ApplicationConfiguration.Initialize();
@@ -167,10 +205,10 @@ namespace Faster
         /// relaunch spawns a brand-new process whose "parent" is the elevation broker, not your
         /// terminal, so THAT process's own call to this method can't reattach and its output
         /// goes nowhere. That's exactly why read-only commands (--help, --list, --show, --delete,
-        /// --baseline) never trigger a relaunch - they run right here, already attached. Only
-        /// --activate/--restore/--recapture-baseline elevate (the GUI no longer does), so only
-        /// those can hit this limitation; run from an already-elevated prompt for their output
-        /// to appear inline.
+        /// --baseline) never trigger a relaunch on their own - they run right here, already
+        /// attached. --activate/--restore/--recapture-baseline elevate automatically, and --admin
+        /// can force a relaunch for any command; run from an already-elevated prompt if you need
+        /// one of those commands' output to appear inline instead of nowhere.
         /// </summary>
         private static void EnsureConsole()
         {
@@ -198,24 +236,32 @@ USAGE:
   Faster.exe --delete <name>        Delete a saved list.
   Faster.exe --baseline             Show the baseline (captures one first if missing).
   Faster.exe --recapture-baseline   Force a fresh baseline capture, overwriting the old one.
+  Faster.exe --admin                Force the UAC elevation prompt (see NOTES) - can combine
+                                     with any other command, e.g. --admin --activate <name>.
   Faster.exe --help                 Show this help and exit.
 
 NOTES:
   --activate/--restore/--recapture-baseline change a service's configuration and request
   Administrator - relaunching with a UAC prompt if not already elevated.
-  --help/--list/--show/--delete/--baseline are read-only and never prompt for elevation.
+  --help/--list/--show/--delete/--baseline are read-only and never prompt for elevation on
+  their own.
+  --admin forces that UAC prompt/relaunch up front regardless of which command follows it (a
+  no-op if already elevated) - useful from a batch file to make elevation explicit, or to force
+  an otherwise read-only command to run elevated. ""Faster.exe --admin"" with no other command
+  launches the GUI pre-elevated.
   The GUI always launches unelevated and elevates on demand from inside the window instead
   (a toolbar ""Run as Admin"" button; Activate/Restore also offer to relaunch as admin first
-  if you're not already elevated).
-  Run from an already-elevated prompt if you want the elevating CLI commands' output to
-  appear inline in that same terminal (a UAC relaunch spawns a separate process that can't
-  reattach to it).
+  if you're not already elevated) - unless started with --admin, above.
+  Run from an already-elevated prompt if you want an elevating CLI command's output to appear
+  inline in that same terminal (a UAC relaunch spawns a separate process that can't reattach
+  to it).
 
 EXAMPLES:
   Faster.exe --list
   Faster.exe --show ""Gaming Mode""
   Faster.exe --activate ""Gaming Mode""
-  Faster.exe --restore");
+  Faster.exe --restore
+  Faster.exe --admin --activate ""Gaming Mode""");
         }
     }
 }

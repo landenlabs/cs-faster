@@ -1,0 +1,166 @@
+name: Publish Windows builds and installers
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish-win:
+    runs-on: windows-latest
+    permissions:
+      contents: write   # required to create the release and upload assets
+    # Code-signing secrets (optional). Add these in the repo Settings > Secrets:
+    #   CODE_SIGN_PFX_BASE64 - base64 of your code-signing .pfx  (certutil -encode / [Convert]::ToBase64String)
+    #   CODE_SIGN_PASSWORD   - the .pfx password
+    # When CODE_SIGN_PFX_BASE64 is empty the Sign steps are skipped and the build ships unsigned.
+    env:
+      CODE_SIGN_PFX_BASE64: ${{ secrets.CODE_SIGN_PFX_BASE64 }}
+      CODE_SIGN_PASSWORD: ${{ secrets.CODE_SIGN_PASSWORD }}
+      TIMESTAMP_URL: http://timestamp.digicert.com
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Publish (x64 self-contained single file)
+        run: |
+          dotnet publish -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=false /p:DebugType=none /p:DebugSymbols=false -o ./artifacts/win-x64
+
+      - name: Sign published exe
+        if: ${{ env.CODE_SIGN_PFX_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CODE_SIGN_PFX_BASE64))
+          $signtool = Get-Command signtool.exe -ErrorAction SilentlyContinue
+          if (-not $signtool) { throw "signtool.exe not found on the runner." }
+          $exe = "./artifacts/win-x64/Faster.exe"
+          if (Test-Path $exe) {
+            & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:CODE_SIGN_PASSWORD /tr $env:TIMESTAMP_URL /td SHA256 $exe
+            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed (exit $LASTEXITCODE) for $exe." }
+          } else {
+            Write-Host "Skipping sign: $exe not found"
+          }
+          Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+
+      - name: Create portable zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path ./artifacts/win-x64/Faster.exe -DestinationPath ./artifacts/Faster-win-x64-portable.zip -Force
+
+      - name: Create MSIX package (x64)
+        shell: pwsh
+        run: |
+          $version = (Select-Xml -Path ./Faster.csproj -XPath '//Project/PropertyGroup/Version').Node.InnerText
+          $msixVersion = "$version.0"
+          $msixdir = './artifacts/msix'
+          New-Item -ItemType Directory -Path $msixdir -Force | Out-Null
+
+          $packageDir = Join-Path $msixdir 'package'
+          if (Test-Path $packageDir) { Remove-Item $packageDir -Recurse -Force }
+          New-Item -ItemType Directory -Path $packageDir | Out-Null
+
+          Copy-Item -Path ./artifacts/win-x64/* -Destination $packageDir -Recurse -Force
+
+          $assets = Join-Path $packageDir 'Assets'
+          New-Item -ItemType Directory -Path $assets -Force | Out-Null
+          foreach ($logo in @('StoreLogo.png', 'Square150x150Logo.png', 'Square44x44Logo.png')) {
+            $dest = Join-Path $assets $logo
+            if (-not (Test-Path $dest)) { New-Item -ItemType File -Path $dest | Out-Null }
+          }
+
+          $template = Get-Content ./.github/packaging/AppxManifest.xml -Raw
+          $manifest = $template.Replace('{VERSION}', $msixVersion)
+          Set-Content (Join-Path $packageDir 'AppxManifest.xml') $manifest -Encoding utf8
+
+          $makeappx = Get-Command makeappx.exe -ErrorAction SilentlyContinue
+          if (-not $makeappx) { Write-Host 'makeappx.exe not found on runner; skipping MSIX.'; exit 0 }
+
+          $msixPath = Join-Path $msixdir "Faster-$version-x64.msix"
+          & $makeappx.FullName pack /d $packageDir /p $msixPath
+          if ($LASTEXITCODE -ne 0) { throw "makeappx failed (exit $LASTEXITCODE)." }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          if ($env:CODE_SIGN_PFX_BASE64 -ne '') {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:CODE_SIGN_PFX_BASE64))
+            $pw = $env:CODE_SIGN_PASSWORD
+          } else {
+            Write-Host 'No signing secret; creating temporary self-signed cert for MSIX (not trusted).'
+            $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=LanDen Labs' `
+              -CertStoreLocation 'Cert:\CurrentUser\My' -KeyExportPolicy Exportable `
+              -NotAfter (Get-Date).AddYears(1)
+            $pw = ''
+            Export-PfxCertificate -Cert $cert -FilePath $pfxPath `
+              -Password (ConvertTo-SecureString -String $pw -Force -AsPlainText)
+          }
+
+          $signtool = Get-Command signtool.exe -ErrorAction SilentlyContinue
+          if (-not $signtool) { Write-Host 'signtool.exe not found; skipping MSIX signing.'; exit 0 }
+
+          if ($pw -ne '') {
+            & $signtool.FullName sign /fd SHA256 /f $pfxPath /p $pw /tr $env:TIMESTAMP_URL /td SHA256 $msixPath
+          } else {
+            & $signtool.FullName sign /fd SHA256 /f $pfxPath /tr $env:TIMESTAMP_URL /td SHA256 $msixPath
+          }
+          Write-Host "MSIX: $msixPath"
+
+      - name: Install WiX toolset
+        shell: pwsh
+        run: choco install wixtoolset -y
+
+      - name: Build MSI (x64)
+        shell: pwsh
+        run: |
+          $version = (Select-Xml -Path ./Faster.csproj -XPath '//Project/PropertyGroup/Version').Node.InnerText
+          $outdir = (Resolve-Path './artifacts/win-x64').Path
+          $msidir = './artifacts/msi'
+          New-Item -ItemType Directory -Path $msidir -Force | Out-Null
+
+          $template = Get-Content ./.github/packaging/faster.wxs -Raw
+          $wxs = $template.Replace('{VERSION}', $version).Replace('{EXEDIR}', $outdir)
+          $wxsPath = Join-Path $msidir 'faster.wxs'
+          Set-Content $wxsPath $wxs -Encoding utf8
+
+          $candle = Get-Command candle.exe -ErrorAction SilentlyContinue
+          if (-not $candle) { throw 'candle.exe not found after installing WiX.' }
+          $light = Get-Command light.exe -ErrorAction SilentlyContinue
+          if (-not $light) { throw 'light.exe not found after installing WiX.' }
+
+          & $candle.Source -o (Join-Path $msidir 'faster.wixobj') $wxsPath
+          if ($LASTEXITCODE -ne 0) { throw "candle failed (exit $LASTEXITCODE)." }
+          & $light.Source -out (Join-Path $msidir "Faster-$version-x64.msi") (Join-Path $msidir 'faster.wixobj')
+          if ($LASTEXITCODE -ne 0) { throw "light failed (exit $LASTEXITCODE)." }
+
+      - name: Sign MSI
+        if: ${{ env.CODE_SIGN_PFX_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CODE_SIGN_PFX_BASE64))
+          $msi = Get-ChildItem ./artifacts/msi/*.msi | Select-Object -First 1
+          $signtool = Get-Command signtool.exe -ErrorAction SilentlyContinue
+          & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:CODE_SIGN_PASSWORD /tr $env:TIMESTAMP_URL /td SHA256 $msi.FullName
+          Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+
+      - name: Create GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            ./artifacts/Faster-win-x64-portable.zip
+            ./artifacts/msix/*.msix
+            ./artifacts/msi/*.msi
